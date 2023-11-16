@@ -1,0 +1,14 @@
+black
+gdown
+isort
+lpips==0.1.4
+monai-generative
+monai[nibabel, matplotlib, pandas, mlflow, tqdm, pydicom]==1.2.0
+numpy==1.22.2
+omegaconf==2.3.0
+pre-commit
+protobuf==3.20.3
+pynvml
+spacy
+tensorboardX
+transformers[torch]==4.30.2
