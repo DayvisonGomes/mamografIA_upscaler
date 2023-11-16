@@ -3,7 +3,8 @@ import os
 import pandas as pd
 
 def creating_csvs(args):
-    """Função que cria os arquivos .tsv em uma pasta passada pelo argumento 
+    """
+    Função que cria os arquivos .tsv em uma pasta passada pelo argumento 
     output_dir. Esses arquivos contêm os caminhos para cada subset (treino, teste 
     e validação) das imagens médicas.
 
@@ -15,7 +16,7 @@ def creating_csvs(args):
         saída (--output_dir).
     """
     
-    path_data = 'E:\TCC_repo\mamografIA_upscaler\data' 
+    path_data = '/project/data' 
     images_paths = os.listdir(path_data)
     
     all_data = []
@@ -25,7 +26,6 @@ def creating_csvs(args):
 
     df = pd.DataFrame(all_data)
     df = df.sample(frac=1, random_state=42).reset_index(drop=True)
-    df['image'] = df['image'].apply(lambda x: '/project/' + '/'.join(x.split("\\")[3:]))
     
     train_data_list = df[:500]
     val_data_list = df[500:550]
