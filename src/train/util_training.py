@@ -7,7 +7,6 @@ from generative.losses.adversarial_loss import PatchAdversarialLoss
 from pynvml.smi import nvidia_smi
 from torch.cuda.amp import GradScaler, autocast
 from tqdm import tqdm
-from util import log_ldm_sample_unconditioned, log_ldm_upsampler, log_reconstructions
 
 def get_lr(optimizer):
     for param_group in optimizer.param_groups:

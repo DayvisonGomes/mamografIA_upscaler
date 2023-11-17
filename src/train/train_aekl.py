@@ -10,8 +10,8 @@ from generative.networks.nets.patchgan_discriminator import PatchDiscriminator
 from monai.config import print_config
 from monai.utils import set_determinism
 from omegaconf import OmegaConf
-from ..utils.util_training import train_aekl
-from ..utils import get_upsampler_dataloader
+from util_training import train_aekl
+from util_transformations import get_upsampler_dataloader
 
 warnings.filterwarnings("ignore")
 
@@ -33,7 +33,7 @@ if __name__ == '__main__':
     print_config()
     
     output_dir = "/project/outputs/runs/"
-    os.mkdirs(output_dir, exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True)
     
     print("Carregando os dados...")
     train_loader, val_loader = get_upsampler_dataloader(
