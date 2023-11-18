@@ -98,7 +98,9 @@ def train_aekl(
 
     print(f"Training finished!")
     print(f"Saving final model...")
-    torch.save(raw_model.state_dict(), os.path.join(output_dir, "aekl" ,"final_model_aekl.pth"))
+    model_save_path = os.path.join(output_dir, "aekl")
+    os.makedirs(model_save_path, exist_ok=True)
+    torch.save(raw_model.state_dict(), os.path.join(model_save_path, "final_model_aekl.pth"))
 
     return val_loss
 
@@ -304,7 +306,6 @@ def train_upsampler_ldm(
         loader=val_loader,
         device=device,
         step=len(train_loader) * start_epoch,
-        sample=False,
         scale_factor=scale_factor,
     )
     print(f"epoch {start_epoch} val loss: {val_loss:.4f}")
@@ -322,6 +323,7 @@ def train_upsampler_ldm(
             scaler=scaler,
             scale_factor=scale_factor,
         )
+        torch.cuda.empty_cache()
 
         if (epoch + 1) % eval_freq == 0:
             val_loss = eval_upsampler_ldm(
@@ -332,9 +334,9 @@ def train_upsampler_ldm(
                 loader=val_loader,
                 device=device,
                 step=len(train_loader) * epoch,
-                sample=True if (epoch + 1) % (eval_freq * 2) == 0 else False,
                 scale_factor=scale_factor,
             )
+            torch.cuda.empty_cache()
 
             print(f"epoch {epoch + 1} val loss: {val_loss:.4f}")
             print_gpu_memory_report()
@@ -342,10 +344,12 @@ def train_upsampler_ldm(
             if val_loss <= best_loss:
                 print(f"New best val loss {val_loss}")
                 best_loss = val_loss
-
+            
     print(f"Training finished!")
     print(f"Saving final model...")
-    torch.save(raw_model.state_dict(), os.path.join(output_dir, "ldm" ,"final_model_ldm.pth"))
+    model_save_path = os.path.join(output_dir, "ldm")
+    os.makedirs(model_save_path, exist_ok=True)
+    torch.save(raw_model.state_dict(), os.path.join(model_save_path, "final_model_ldm.pth"))
 
     return val_loss
 
@@ -372,9 +376,9 @@ def train_epoch_upsampler_ldm(
         optimizer.zero_grad(set_to_none=True)
         with autocast(enabled=True):
             with torch.no_grad():
-                latent = stage1(images) * scale_factor
+                latent = stage1.encode_stage_2_inputs(images) * scale_factor
 
-            timesteps = torch.randint(0, scheduler.num_train_timesteps, (latent.shape[0],), device=device).long()
+            timesteps = torch.randint(0, scheduler.num_train_timesteps, (images.shape[0],), device=device).long()
             low_res_timesteps = torch.randint(0, 350, (low_res_image.shape[0],), device=device).long()
         
             noise = torch.randn_like(latent).to(device)
@@ -430,9 +434,9 @@ def eval_upsampler_ldm(
         low_res_image = x["low_res_image"].to(device)
 
         with autocast(enabled=True):
-            latent = stage1(images) * scale_factor
+            latent = stage1.encode_stage_2_inputs(images) * scale_factor
 
-            timesteps = torch.randint(0, scheduler.num_train_timesteps, (latent.shape[0],), device=device).long()
+            timesteps = torch.randint(0, scheduler.num_train_timesteps, (images.shape[0],), device=device).long()
             low_res_timesteps = torch.randint(0, 350, (low_res_image.shape[0],), device=device).long()
 
             noise = torch.randn_like(latent).to(device)
@@ -443,7 +447,7 @@ def eval_upsampler_ldm(
                 noise=low_res_noise,
                 timesteps=low_res_timesteps,
             )
-
+    
             latent_model_input = torch.cat([noisy_latent, noisy_low_res_image], dim=1)
 
             noise_pred = model(
@@ -464,3 +468,5 @@ def eval_upsampler_ldm(
         total_losses[k] /= len(loader.dataset)
 
     return total_losses["loss"]
+
+

@@ -65,6 +65,7 @@ def get_upsampler_dataloader(batch_size: int,training_ids: str, validation_ids: 
         transforms.EnsureChannelFirstd(keys=["image"]),
         transforms.ScaleIntensityRanged(keys=["image"], a_min=0.0, a_max=255.0, b_min=0.0, b_max=1.0, clip=True),
         transforms.CopyItemsd(keys=["image"], times=1, names=["low_res_image"]),
+        transforms.Resized(keys=["image"], spatial_size=(image_size, image_size)),
         transforms.Resized(keys=["low_res_image"], spatial_size=(low_res_size, low_res_size)),
         ]
     )

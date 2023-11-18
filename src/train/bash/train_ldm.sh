@@ -10,7 +10,7 @@ N_EPOCHS=30
 VAL_INTERVAL=10
 NUM_WORKERS=8
 CONFIG_FILE_AEKL="/project/configs/aekl_configs/aekl_v0.yaml"
-STAGE_1_PATH="/project/outputs/runs/aekl/final_model.pth"
+STAGE_1_PATH="/project/outputs/runs/aekl/final_model_aekl.pth"
 SCALE_FACTOR=1.0
 
 docker run -it --ipc=host \
