@@ -32,14 +32,13 @@ def exibir_imagem_nii(path_nii):
     plt.show()
 
 def save_img_nii(path_dcm, output_dir='/project/outputs/reference_image'):
-
+    
     transform = transforms.Compose(
         [
             transforms.LoadImaged(keys=["image"]),
             ExpandDimsd(),
             transforms.EnsureChannelFirstd(keys=["image"]),
-            transforms.Resized(keys=["image"], spatial_size=(256, 256),
-            ),
+            transforms.Resized(keys=["image"], spatial_size=(1,256, 256))
         ]
     )
 
