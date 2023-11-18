@@ -98,7 +98,7 @@ def train_aekl(
 
     print(f"Training finished!")
     print(f"Saving final model...")
-    torch.save(raw_model.state_dict(), os.path.join(output_dir, "final_model.pth"))
+    torch.save(raw_model.state_dict(), os.path.join(output_dir, "aekl" ,"final_model_aekl.pth"))
 
     return val_loss
 
@@ -276,3 +276,191 @@ def eval_aekl(
         total_losses[k] /= len(loader.dataset)
 
     return total_losses["l1_loss"]
+
+def train_upsampler_ldm(
+    model: nn.Module,
+    stage1: nn.Module,
+    scheduler: nn.Module,
+    low_res_scheduler: nn.Module,
+    start_epoch: int,
+    best_loss: float,
+    train_loader: torch.utils.data.DataLoader,
+    val_loader: torch.utils.data.DataLoader,
+    optimizer: torch.optim.Optimizer,
+    n_epochs: int,
+    eval_freq: int,
+    device: torch.device,
+    output_dir:str,
+    scale_factor: float = 1.0
+) -> float:
+    scaler = GradScaler()
+    raw_model = model.module if hasattr(model, "module") else model
+
+    val_loss = eval_upsampler_ldm(
+        model=model,
+        stage1=stage1,
+        scheduler=scheduler,
+        low_res_scheduler=low_res_scheduler,
+        loader=val_loader,
+        device=device,
+        step=len(train_loader) * start_epoch,
+        sample=False,
+        scale_factor=scale_factor,
+    )
+    print(f"epoch {start_epoch} val loss: {val_loss:.4f}")
+
+    for epoch in range(start_epoch, n_epochs):
+        train_epoch_upsampler_ldm(
+            model=model,
+            stage1=stage1,
+            scheduler=scheduler,
+            low_res_scheduler=low_res_scheduler,
+            loader=train_loader,
+            optimizer=optimizer,
+            device=device,
+            epoch=epoch,
+            scaler=scaler,
+            scale_factor=scale_factor,
+        )
+
+        if (epoch + 1) % eval_freq == 0:
+            val_loss = eval_upsampler_ldm(
+                model=model,
+                stage1=stage1,
+                scheduler=scheduler,
+                low_res_scheduler=low_res_scheduler,
+                loader=val_loader,
+                device=device,
+                step=len(train_loader) * epoch,
+                sample=True if (epoch + 1) % (eval_freq * 2) == 0 else False,
+                scale_factor=scale_factor,
+            )
+
+            print(f"epoch {epoch + 1} val loss: {val_loss:.4f}")
+            print_gpu_memory_report()
+
+            if val_loss <= best_loss:
+                print(f"New best val loss {val_loss}")
+                best_loss = val_loss
+
+    print(f"Training finished!")
+    print(f"Saving final model...")
+    torch.save(raw_model.state_dict(), os.path.join(output_dir, "ldm" ,"final_model_ldm.pth"))
+
+    return val_loss
+
+
+def train_epoch_upsampler_ldm(
+    model: nn.Module,
+    stage1: nn.Module,
+    scheduler: nn.Module,
+    low_res_scheduler: nn.Module,
+    loader: torch.utils.data.DataLoader,
+    optimizer: torch.optim.Optimizer,
+    device: torch.device,
+    epoch: int,
+    scaler: GradScaler,
+    scale_factor: float = 1.0,
+) -> None:
+    model.train()
+
+    pbar = tqdm(enumerate(loader), total=len(loader))
+    for step, x in pbar:
+        images = x["image"].to(device)
+        low_res_image = x["low_res_image"].to(device)
+
+        optimizer.zero_grad(set_to_none=True)
+        with autocast(enabled=True):
+            with torch.no_grad():
+                latent = stage1(images) * scale_factor
+
+            timesteps = torch.randint(0, scheduler.num_train_timesteps, (latent.shape[0],), device=device).long()
+            low_res_timesteps = torch.randint(0, 350, (low_res_image.shape[0],), device=device).long()
+        
+            noise = torch.randn_like(latent).to(device)
+            low_res_noise = torch.randn_like(low_res_image).to(device)
+            noisy_latent = scheduler.add_noise(original_samples=latent, noise=noise, timesteps=timesteps)
+            noisy_low_res_image = low_res_scheduler.add_noise(
+                original_samples=low_res_image,
+                noise=low_res_noise,
+                timesteps=low_res_timesteps,
+            )
+
+            latent_model_input = torch.cat([noisy_latent, noisy_low_res_image], dim=1)
+
+            noise_pred = model(
+                x=latent_model_input,
+                timesteps=timesteps,
+                class_labels=low_res_timesteps,
+            )
+                
+            loss = F.mse_loss(noise_pred.float(), noise.float())
+
+        losses = OrderedDict(loss=loss)
+
+        scaler.scale(losses["loss"]).backward()
+        scaler.step(optimizer)
+        scaler.update()
+
+        pbar.set_postfix(
+            {
+                "epoch": epoch,
+                "loss": f"{losses['loss'].item():.5f}",
+                "lr": f"{get_lr(optimizer):.6f}",
+            }
+        )
+
+@torch.no_grad()
+def eval_upsampler_ldm(
+    model: nn.Module,
+    stage1: nn.Module,
+    scheduler: nn.Module,
+    low_res_scheduler: nn.Module,
+    loader: torch.utils.data.DataLoader,
+    device: torch.device,
+    step: int,
+    scale_factor: float = 1.0,
+) -> float:
+    
+    model.eval()
+    total_losses = OrderedDict()
+
+    for x in loader:
+        images = x["image"].to(device)
+        low_res_image = x["low_res_image"].to(device)
+
+        with autocast(enabled=True):
+            latent = stage1(images) * scale_factor
+
+            timesteps = torch.randint(0, scheduler.num_train_timesteps, (latent.shape[0],), device=device).long()
+            low_res_timesteps = torch.randint(0, 350, (low_res_image.shape[0],), device=device).long()
+
+            noise = torch.randn_like(latent).to(device)
+            low_res_noise = torch.randn_like(low_res_image).to(device)
+            noisy_latent = scheduler.add_noise(original_samples=latent, noise=noise, timesteps=timesteps)
+            noisy_low_res_image = low_res_scheduler.add_noise(
+                original_samples=low_res_image,
+                noise=low_res_noise,
+                timesteps=low_res_timesteps,
+            )
+
+            latent_model_input = torch.cat([noisy_latent, noisy_low_res_image], dim=1)
+
+            noise_pred = model(
+                x=latent_model_input,
+                timesteps=timesteps,
+                class_labels=low_res_timesteps,
+            )
+
+            loss = F.mse_loss(noise_pred.float(), noise.float())
+
+        loss = loss.mean()
+        losses = OrderedDict(loss=loss)
+
+        for k, v in losses.items():
+            total_losses[k] = total_losses.get(k, 0) + v.item() * images.shape[0]
+
+    for k in total_losses.keys():
+        total_losses[k] /= len(loader.dataset)
+
+    return total_losses["loss"]
