@@ -151,10 +151,72 @@ sh -xe ./src/train/bash/upscale_test_set.sh
 
 Para mudar os parâmetros, vá até os arquivos .sh para alterá-los.
 
-### Qualquer imagem
+### Qualquer imagem / Métricas
 
 (terminar)
 
-## Dicas e Dificuldades
+## Referencial Teórico
+
+Começaremos falando sobre os modelos utilizados e quais métricas foram usadas neste trabalho.
+
+
+### Modelos
+
+#### Autoencoder
+Os Autoencoders são uma técnica de aprendizado não supervisionado, na qual usamos as redes neurais para a tarefa de aprendizado de representação. Especificamente, projetaremos uma arquitetura de rede neural de modo a impor um gargalo na rede que força uma representação de conhecimento compactada da entrada original.
+
+Autoencoders (AE) são redes neurais que visam copiar suas entradas para suas saídas. Eles trabalham compactando a entrada em uma representação de espaço latente e, em seguida, reconstruindo a saída dessa representação. Esse tipo de rede é composto de duas partes:
+
+Codificador (Encoder): é a parte da rede que compacta a entrada em uma representação de espaço latente (codificando a entrada).
+
+Decodificador (Decoder): Esta parte tem como objetivo reconstruir a entrada da representação do espaço latente.
+#### Autoencoder-KL
+
+
+O autoencoder variacional (VAE) com perda KL foi introduzido no trabalho "Auto-Encoding Variational Bayes" de Diederik P. Kingma e Max Welling. (https://arxiv.org/abs/1312.6114v11)
+é uma versão probabilística do AutoEncoder determinístico. Enquanto o AutoEncoder projeta a entrada para uma incorporação específica no espaço latente, o VAE projeta os dados de entrada para distribuições de probabilidade. Portanto, a vantagem do VAE é que ele pode gerar novos dados ou imagens, por meio de amostragem aleatória.
+
+Temos que ver como se parece uma distribuição normal e como calcular a divergência de Kullback-Leibler (KL), que é a função objetivo para otimizar a incorporação do espaço latente do VAE a partir da distribuição.
+
+##### Distribuição Normal
+Uma distribuição normal ou distribuição gaussiana é um tipo de distribuição de probabilidade contínua para uma variável aleatória com valores reais.
+
+A equação que representa essa distribuição é:
+
+![Alt text](/imagens_/image_normal.png)
+
+##### Divergência KL
+
+Existem duas funções de perda no treinamento de um VAE: Perda de Erro Quadrático Médio (MSE) para calcular a perda entre a imagem de entrada e a imagem reconstruída, e Divergência KL para calcular a distribuição codificada e a distribuição normal com média 0 e variância 1.0.
+
+###### MSE
+
+![Alt text](image_mse.png)
+
+
+###### Divergência KL entre dois Gaussianos
+
+Podemos calcular a divergência KL comparando dois Gaussianos.
+
+![Alt text](/imagens_/image_kl.png)
+
+Segue o caminho de dados do Autoencoder-KL:
+
+
+![Alt text](/imagens_/image_pathautoencoderkl.png)
+
+Neste imagem vemos que a imagem de entrada é passado por blocos de convolução até chegar em sua parte final do encoder, onde a rede ira gerar vetores com médias e desvios padrões com o objetivo de se aproximar da distribuição normal com média 0 e variância 1, após isto, essa representação latenre probabilistica é passada para o decoder, para que a imagem seja reconstruída novamente.
+ 
+#### Modelo de Difusão Latente
+
+### Métricas
+
+#### SSIM
+
+#### PSNR
+
+#### FID 
+
+## Metodologia
 
 
