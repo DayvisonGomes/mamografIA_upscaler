@@ -190,7 +190,7 @@ Existem duas funções de perda no treinamento de um VAE: Perda de Erro Quadrát
 
 ###### MSE
 
-![Alt text](image_mse.png)
+![Alt text](/imagens_/image_mse.png)
 
 
 ###### Divergência KL entre dois Gaussianos
