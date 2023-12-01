@@ -172,7 +172,6 @@ Codificador (Encoder): é a parte da rede que compacta a entrada em uma represen
 Decodificador (Decoder): Esta parte tem como objetivo reconstruir a entrada da representação do espaço latente.
 #### Autoencoder-KL
 
-
 O autoencoder variacional (VAE) com perda KL foi introduzido no trabalho "Auto-Encoding Variational Bayes" de Diederik P. Kingma e Max Welling. (https://arxiv.org/abs/1312.6114v11)
 é uma versão probabilística do AutoEncoder determinístico. Enquanto o AutoEncoder projeta a entrada para uma incorporação específica no espaço latente, o VAE projeta os dados de entrada para distribuições de probabilidade. Portanto, a vantagem do VAE é que ele pode gerar novos dados ou imagens, por meio de amostragem aleatória.
 
@@ -206,7 +205,7 @@ Segue o caminho de dados do Autoencoder-KL:
 ![Alt text](/imagens_/image_pathautoencoderkl.png)
 
 Neste imagem vemos que a imagem de entrada é passado por blocos de convolução até chegar em sua parte final do encoder, onde a rede ira gerar vetores com médias e desvios padrões com o objetivo de se aproximar da distribuição normal com média 0 e variância 1, após isto, essa representação latenre probabilistica é passada para o decoder, para que a imagem seja reconstruída novamente.
- 
+
 #### Modelo de Difusão Latente
 
 ### Métricas
