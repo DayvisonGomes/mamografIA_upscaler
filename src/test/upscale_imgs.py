@@ -1,3 +1,4 @@
+""" Script to upscale the samples of the downsampled LDM."""
 import argparse
 import os
 from pathlib import Path
@@ -17,6 +18,7 @@ from omegaconf import OmegaConf
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
 
@@ -34,13 +36,13 @@ if __name__ == '__main__':
     parser.add_argument("--num_inference_steps", type=int, help="")
     parser.add_argument("--noise_level", type=int, help="")
     parser.add_argument("--test_ids", help="Location of file with test ids.")
-
+    parser.add_argument("--downsampled_dir", help='Location of img files.')
+    
     args = parser.parse_args()
 
     set_determinism(seed=args.seed)
     print_config()
-
-    #output_dir = "/project/outputs/runs/upcale_test_set"
+    
     output_dir = args.output_dir
     os.makedirs(output_dir, exist_ok=True)
     
@@ -68,43 +70,43 @@ if __name__ == '__main__':
     )
     scheduler.set_timesteps(args.num_inference_steps)
 
-    df = pd.read_csv(args.test_ids, sep="\t")
-    df = df[args.start_index : args.stop_index]
-
-    data_dicts = []
-    for index, row in df.iterrows():
-        data_dicts.append(
+    # Samples
+    samples_dir = os.listdir(args.downsampled_dir)
+    samples_datalist = []
+    
+    for sample_path in sorted(samples_dir):
+        samples_datalist.append(
             {
-                "image": str(row["image"]),
+                "low_res_image": str(sample_path),
             }
         )
+        
+    print(f"{len(samples_datalist)} images found in {str(samples_dir)}")
+    samples_datalist = samples_datalist[args.start_index : args.stop_index]
 
-    image_size = 256
     low_res_size = 64
-    eval_transforms = transforms.Compose(
+    sample_transforms = transforms.Compose(
         [
-        transforms.LoadImaged(keys=["image"]),
-        transforms.EnsureChannelFirstd(keys=["image"]),
-        transforms.ScaleIntensityd(keys=["image"], minv=0.0, maxv=1.0),
-        transforms.CopyItemsd(keys=["image"], times=1, names=["low_res_image"]),
-        transforms.Resized(keys=["image"], spatial_size=(image_size, image_size)),
-        transforms.Resized(keys=["low_res_image"], spatial_size=(low_res_size, low_res_size)),
-        transforms.ToTensord(keys=["image", "low_res_image"]),
+            transforms.LoadImaged(keys=["low_res_image"]),
+            transforms.EnsureChannelFirstd(keys=["low_res_image"]),
+            transforms.ScaleIntensityd(keys=["image"], minv=0.0, maxv=1.0),
+            transforms.Resized(keys=["low_res_image"], spatial_size=(low_res_size, low_res_size)),
+            transforms.ToTensord(keys=["low_res_image"]),
         ]
     )
 
-    eval_ds = Dataset(
-        data=data_dicts,
-        transform=eval_transforms,
+    samples_ds = Dataset(
+        data=samples_datalist,
+        transform=sample_transforms,
     )
-    eval_loader = DataLoader(
-        eval_ds,
+    samples_loader = DataLoader(
+        samples_ds,
         batch_size=1,
         shuffle=False,
         num_workers=4,
     )
 
-    for batch in tqdm(eval_loader):
+    for batch in tqdm(samples_loader):
         low_res_image = batch["low_res_image"].to(device)
 
         latents = torch.randn((1, config["ldm"]["params"]["out_channels"], args.x_size, args.y_size)).to(
@@ -118,6 +120,7 @@ if __name__ == '__main__':
             noise=low_res_noise,
             timesteps=torch.Tensor((noise_level,)).long().to(device),
         )
+        
         scheduler.set_timesteps(num_inference_steps=args.num_inference_steps)
         for t in tqdm(scheduler.timesteps, ncols=110):
             with torch.no_grad():
@@ -141,4 +144,3 @@ if __name__ == '__main__':
         mpimg.imsave(path_img + '.png', batch['image'][0,0], cmap=plt.cm.gray)
         mpimg.imsave(path_img_down + '.png', low_res_image[0,0], cmap=plt.cm.gray)
         mpimg.imsave(path_img_up + '.png', sample[0,0], cmap=plt.cm.gray)
-        

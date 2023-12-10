@@ -126,6 +126,10 @@ def train_epoch_aekl(
     adv_loss = PatchAdversarialLoss(criterion="least_squares", no_activation_leastsq=True)
 
     pbar = tqdm(enumerate(loader), total=len(loader))
+    epoch_loss = 0
+    gen_epoch_loss = 0
+    disc_epoch_loss = 0
+    
     for step, x in pbar:
         images = x["image"].to(device)
 
@@ -189,18 +193,24 @@ def train_epoch_aekl(
             torch.nn.utils.clip_grad_norm_(discriminator.parameters(), 1)
             scaler_d.step(optimizer_d)
             scaler_d.update()
+            
         else:
             discriminator_loss = torch.tensor([0.0]).to(device)
 
+        epoch_loss += l1_loss.item()
+        if adv_weight > 0:
+            gen_epoch_loss += generator_loss.item()
+            disc_epoch_loss += discriminator_loss.item()
+            
         losses["d_loss"] = discriminator_loss
         pbar.set_postfix(
             {
                 "epoch": epoch,
                 "loss": f"{losses['loss'].item():.6f}",
-                "l1_loss": f"{losses['l1_loss'].item():.6f}",
+                "l1_loss": f"{epoch_loss:.6f}",
                 "p_loss": f"{losses['p_loss'].item():.6f}",
-                "g_loss": f"{losses['g_loss'].item():.6f}",
-                "d_loss": f"{losses['d_loss'].item():.6f}",
+                "g_loss": f"{gen_epoch_loss:.6f}",
+                "d_loss": f"{disc_epoch_loss:.6f}",
                 "lr_g": f"{get_lr(optimizer_g):.6f}",
                 "lr_d": f"{get_lr(optimizer_d):.6f}",
             },
@@ -367,6 +377,7 @@ def train_epoch_upsampler_ldm(
     scale_factor: float = 1.0,
 ) -> None:
     model.train()
+    epoch_loss = 0
 
     pbar = tqdm(enumerate(loader), total=len(loader))
     for step, x in pbar:
@@ -405,12 +416,14 @@ def train_epoch_upsampler_ldm(
         scaler.scale(losses["loss"]).backward()
         scaler.step(optimizer)
         scaler.update()
+        
+        epoch_loss += loss.item()
 
         pbar.set_postfix(
             {
                 "epoch": epoch,
-                "loss": f"{losses['loss'].item():.5f}",
-                "lr": f"{get_lr(optimizer):.6f}",
+                "loss": f"{epoch_loss / (step + 1)}",
+                "lr": f"{get_lr(optimizer)}",
             }
         )
 
