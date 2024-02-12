@@ -112,10 +112,10 @@ Após a criação da imagem docker, é preciso a criação de uma pasta chamada 
 ```bash
 docker run -it 
         --ipc=host 
-        -v ./:/project/ 
+        -v ${PWD}:/project/ 
         <image-name> 
         python /project/src/preprocessing_data/process_medical_images.py 
-            --output_dir project/outputs/tsv_files
+            --output_dir /project/outputs/tsv_files
 ```
 
 Esse arquivo é responsável por criar três arquivos .tsv onde estaram os paths de cada imagem, um para cada subset, para editar as quantidades, sugir mudar no próprio arquivo (att futura). O output_dir é onde estará tais arquivos.

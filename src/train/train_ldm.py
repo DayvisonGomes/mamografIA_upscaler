@@ -64,9 +64,9 @@ if __name__ == '__main__':
     
     print(f"{torch.cuda.device_count()} GPUs!")
     device = torch.device("cuda")
-    if torch.cuda.device_count() > 1:
-        stage1 = torch.nn.DataParallel(stage1)
-        diffusion = torch.nn.DataParallel(diffusion)
+    # if torch.cuda.device_count() > 1:
+    #     stage1 = torch.nn.DataParallel(stage1)
+    #     diffusion = torch.nn.DataParallel(diffusion)
 
     stage1 = stage1.to(device)
     diffusion = diffusion.to(device)
@@ -87,7 +87,7 @@ if __name__ == '__main__':
         val_loader=val_loader,
         optimizer=optimizer,
         n_epochs=args.n_epochs,
-        eval_freq=args.eval_freq,
+        eval_freq=args.val_interval,
         device=device,
         output_dir=output_dir,
         scale_factor=args.scale_factor,

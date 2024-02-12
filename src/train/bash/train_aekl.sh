@@ -6,10 +6,10 @@ TRAINING_IDS="/project/outputs/tsv_files/train.tsv"
 VALIDATION_IDS="/project/outputs/tsv_files/validation.tsv"
 CONFIG_FILE="/project/configs/aekl_configs/aekl_v0.yaml"
 BATCH_SIZE=1
-N_EPOCHS=30
+N_EPOCHS=75
 AUTOENCODER_WARM_UP_N_EPOCHS=10
 VAL_INTERVAL=10
-NUM_WORKERS=8
+NUM_WORKERS=4
 
 docker run -it --ipc=host \
     -v $(pwd):/project/ \

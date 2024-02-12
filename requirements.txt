@@ -1,6 +1,8 @@
 black
 gdown
 isort
+scikit-learn
+pandas
 lpips==0.1.4
 monai-generative
 monai[nibabel, matplotlib, pandas, mlflow, tqdm, pydicom]==1.2.0

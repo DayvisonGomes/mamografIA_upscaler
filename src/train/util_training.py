@@ -46,19 +46,18 @@ def train_aekl(
 
     raw_model = model.module if hasattr(model, "module") else model
 
-    val_loss = eval_aekl(
-        model=model,
-        discriminator=discriminator,
-        perceptual_loss=perceptual_loss,
-        loader=val_loader,
-        device=device,
-        step=len(train_loader) * start_epoch,
-        kl_weight=kl_weight,
-        adv_weight=adv_weight if start_epoch >= adv_start else 0.0,
-        perceptual_weight=perceptual_weight,
-    )
-    
-    print(f"epoch {start_epoch} val loss: {val_loss:.4f}")
+    # val_loss = eval_aekl(
+    #     model=model,
+    #     discriminator=discriminator,
+    #     perceptual_loss=perceptual_loss,
+    #     loader=val_loader,
+    #     device=device,
+    #     step=len(train_loader) * start_epoch,
+    #     kl_weight=kl_weight,
+    #     adv_weight=adv_weight if start_epoch >= adv_start else 0.0,
+    #     perceptual_weight=perceptual_weight,
+    # )
+    #print(f"epoch {start_epoch} val loss: {val_loss:.4f}")
     
     for epoch in range(start_epoch, n_epochs):
         train_epoch_aekl(
@@ -211,8 +210,6 @@ def train_epoch_aekl(
                 "p_loss": f"{losses['p_loss'].item():.6f}",
                 "g_loss": f"{gen_epoch_loss:.6f}",
                 "d_loss": f"{disc_epoch_loss:.6f}",
-                "lr_g": f"{get_lr(optimizer_g):.6f}",
-                "lr_d": f"{get_lr(optimizer_d):.6f}",
             },
         )
 
@@ -308,17 +305,17 @@ def train_upsampler_ldm(
     scaler = GradScaler()
     raw_model = model.module if hasattr(model, "module") else model
 
-    val_loss = eval_upsampler_ldm(
-        model=model,
-        stage1=stage1,
-        scheduler=scheduler,
-        low_res_scheduler=low_res_scheduler,
-        loader=val_loader,
-        device=device,
-        step=len(train_loader) * start_epoch,
-        scale_factor=scale_factor,
-    )
-    print(f"epoch {start_epoch} val loss: {val_loss:.4f}")
+    # val_loss = eval_upsampler_ldm(
+    #     model=model,
+    #     stage1=stage1,
+    #     scheduler=scheduler,
+    #     low_res_scheduler=low_res_scheduler,
+    #     loader=val_loader,
+    #     device=device,
+    #     step=len(train_loader) * start_epoch,
+    #     scale_factor=scale_factor,
+    # )
+    # print(f"epoch {start_epoch} val loss: {val_loss:.4f}")
 
     for epoch in range(start_epoch, n_epochs):
         train_epoch_upsampler_ldm(
@@ -422,8 +419,7 @@ def train_epoch_upsampler_ldm(
         pbar.set_postfix(
             {
                 "epoch": epoch,
-                "loss": f"{epoch_loss / (step + 1)}",
-                "lr": f"{get_lr(optimizer)}",
+                "loss": f"{epoch_loss / (step + 1)}"
             }
         )
 
