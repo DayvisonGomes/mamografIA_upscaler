@@ -13,4 +13,6 @@ protobuf==3.20.3
 pynvml
 spacy
 tensorboardX
+wandb
+tifffile
 transformers[torch]==4.30.2

@@ -1,5 +1,5 @@
 ldm:
-  base_lr: 0.000025
+  base_lr: 0.00005
   params:
     spatial_dims: 2
     in_channels: 16

@@ -2,6 +2,7 @@ import warnings
 import torch
 import argparse
 import os
+#import wandb
 import torch.optim as optim
 
 from generative.losses.perceptual import PerceptualLoss
@@ -27,6 +28,8 @@ if __name__ == '__main__':
     parser.add_argument("--autoencoder_warm_up_n_epochs",type=int,default=10,help="Epoch when the adversarial training starts.",)
     parser.add_argument("--val_interval",type=int,default=10,help="Number of epochs to between evaluations.",)
     parser.add_argument("--num_workers", type=int, default=8, help="Number of loader workers")
+    
+    #run = wandb.init(project="Tcc", name="AutoencoderKL")
 
     args = parser.parse_args()
     set_determinism(seed=args.seed)
@@ -79,5 +82,6 @@ if __name__ == '__main__':
         adv_weight=config["stage1"]["adv_weight"],
         perceptual_weight=config["stage1"]["perceptual_weight"],
         adv_start=args.autoencoder_warm_up_n_epochs,
-        output_dir=output_dir
+        output_dir=output_dir,
+        #run=run
     )

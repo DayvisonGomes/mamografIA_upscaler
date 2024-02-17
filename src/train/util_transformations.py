@@ -16,10 +16,14 @@ def get_datalist(ids_path:str):
 
     data_dicts = []
     for index, row in df.iterrows():
+        if '.tif' in row['image']:
+            print(row['image'])
+            continue
+        
         data_dicts.append(
             {
                 "image": str(row["image"]),
-                "low_res_image": str(row['low_res_image'])
+                #"low_res_image": str(row['low_res_image'])
             }
         )
     print(f"{len(data_dicts)} imagens.")
@@ -38,18 +42,23 @@ def get_upsampler_dataloader(batch_size: int,training_ids: str, validation_ids: 
         num_workers (int): Envolve o quão rápido é feito o carregamento dos
         dados na memória (revisar)
     """
-    roi_image_size = 512
-    roi_low_res_size = 358
-    low_res_size = 256
+    roi_image_size = 416
+    roi_low_res_size = 291
+    low_res_size = 208
 
     train_transforms = transforms.Compose(
         [
-            transforms.LoadImaged(keys=["image", "low_res_image"]),
-            transforms.EnsureChannelFirstd(keys=["image", "low_res_image"]),
-            transforms.ScaleIntensityd(keys=["image", "low_res_image"], minv=0.0, maxv=1.0),
-
-            transforms.CenterSpatialCropD(keys=["image"], roi_size=(roi_image_size,roi_image_size)),
-            transforms.CenterSpatialCropD(keys=["low_res_image"], roi_size=(roi_low_res_size,roi_low_res_size)),
+            # transforms.LoadImaged(keys=["image", "low_res_image"]),
+            # transforms.EnsureChannelFirstd(keys=["image", "low_res_image"]),
+            # transforms.ScaleIntensityd(keys=["image", "low_res_image"], minv=0.0, maxv=1.0),
+            
+            transforms.LoadImaged(keys=["image"]),
+            transforms.EnsureChannelFirstd(keys=["image"]),
+            transforms.ScaleIntensityd(keys=["image"], minv=0.0, maxv=1.0),
+            transforms.Resized(keys=["image"],spatial_size=(256, 256)),
+            
+            #transforms.CenterSpatialCropD(keys=["image"], roi_size=(roi_image_size,roi_image_size)),
+            #transforms.CenterSpatialCropD(keys=["low_res_image"], roi_size=(roi_low_res_size,roi_low_res_size)),
 
             # transforms.RandFlipd( #
             #     keys=["image"],
@@ -65,20 +74,27 @@ def get_upsampler_dataloader(batch_size: int,training_ids: str, validation_ids: 
             #     padding_mode="zeros",
             #     prob=0.25,
             # ),
+            transforms.CopyItemsd(keys=["image"], times=1, names=["low_res_image"]),
             transforms.Resized(keys=["low_res_image"],
-                               spatial_size=(low_res_size, low_res_size)),
+                               spatial_size=(128, 128)),
             transforms.ToTensord(keys=["image",'low_res_image']),
 
         ]
     )
     val_transforms = transforms.Compose(
         [
-          transforms.LoadImaged(keys=["image", "low_res_image"]),
-          transforms.EnsureChannelFirstd(keys=["image", "low_res_image"]),
-          transforms.ScaleIntensityd(keys=["image", "low_res_image"], minv=0.0, maxv=1.0),
-          transforms.CenterSpatialCropD(keys=["image"], roi_size=(roi_image_size,roi_image_size)),
-          transforms.CenterSpatialCropD(keys=["low_res_image"], roi_size=(roi_low_res_size,roi_low_res_size)),
-          transforms.Resized(keys=["low_res_image"], spatial_size=(low_res_size, low_res_size)),
+        #   transforms.LoadImaged(keys=["image", "low_res_image"]),
+        #   transforms.EnsureChannelFirstd(keys=["image", "low_res_image"]),
+        #   transforms.ScaleIntensityd(keys=["image", "low_res_image"], minv=0.0, maxv=1.0),
+          transforms.LoadImaged(keys=["image"]),
+          transforms.EnsureChannelFirstd(keys=["image"]),
+          transforms.ScaleIntensityd(keys=["image"], minv=0.0, maxv=1.0),
+          transforms.CopyItemsd(keys=["image"], times=1, names=["low_res_image"]),
+          transforms.Resized(keys=["image"], spatial_size=(256, 256)),
+          #transforms.CenterSpatialCropD(keys=["image"], roi_size=(roi_image_size,roi_image_size)),
+          
+          #transforms.CenterSpatialCropD(keys=["low_res_image"], roi_size=(roi_low_res_size,roi_low_res_size)),
+          transforms.Resized(keys=["low_res_image"], spatial_size=(128, 128)),
           transforms.ToTensord(keys=["image", "low_res_image"]),
         ]
     )

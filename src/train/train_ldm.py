@@ -9,8 +9,10 @@ from generative.networks.nets import DiffusionModelUNet
 from generative.networks.nets import AutoencoderKL
 from generative.networks.schedulers import DDPMScheduler
 from monai.config import print_config
-from monai.utils import set_determinism
+from monai.utils import set_determinism, first
 from omegaconf import OmegaConf
+#import wandb
+from torch.cuda.amp import autocast
 
 from util_training import train_upsampler_ldm
 from util_transformations import get_upsampler_dataloader
@@ -32,6 +34,8 @@ if __name__ == '__main__':
     parser.add_argument("--n_epochs", type=int, default=25, help="Number of epochs to train.")
     parser.add_argument("--val_interval",type=int,default=10,help="Number of epochs to between evaluations.",)
     parser.add_argument("--num_workers", type=int, default=8, help="Number of loader workers")
+    
+    #run = wandb.init(project="Tcc", name="LatentDiffusionModel")
 
     args = parser.parse_args()
         
@@ -60,7 +64,7 @@ if __name__ == '__main__':
     config = OmegaConf.load(args.config_file)
     diffusion = DiffusionModelUNet(**config["ldm"].get("params", dict()))
     scheduler = DDPMScheduler(**config["ldm"].get("scheduler", dict()))
-    low_res_scheduler = DDPMScheduler(**config["ldm"].get("scheduler", dict()))
+    #low_res_scheduler = DDPMScheduler(**config["ldm"].get("scheduler", dict()))
     
     print(f"{torch.cuda.device_count()} GPUs!")
     device = torch.device("cuda")
@@ -71,7 +75,16 @@ if __name__ == '__main__':
     stage1 = stage1.to(device)
     diffusion = diffusion.to(device)
     
-    optimizer = optim.AdamW(diffusion.parameters(), lr=config["ldm"]["base_lr"])
+    check_data = first(train_loader)
+
+    with torch.no_grad():
+        with autocast(enabled=True):
+            z = stage1.encode_stage_2_inputs(check_data["image"].to('cuda'))
+
+    print(f"Scaling factor set to {1/torch.std(z)}")
+    scale_factor = 1 / torch.std(z)
+    
+    optimizer = optim.Adam(diffusion.parameters(), lr=config["ldm"]["base_lr"])
     best_loss = float("inf")
     start_epoch = 0
     
@@ -80,7 +93,7 @@ if __name__ == '__main__':
         model=diffusion,
         stage1=stage1,
         scheduler=scheduler,
-        low_res_scheduler=low_res_scheduler,
+        low_res_scheduler=scheduler,
         start_epoch=start_epoch,
         best_loss=best_loss,
         train_loader=train_loader,
@@ -90,7 +103,8 @@ if __name__ == '__main__':
         eval_freq=args.val_interval,
         device=device,
         output_dir=output_dir,
-        scale_factor=args.scale_factor,
+        scale_factor=scale_factor, #args.scale_factor
+        #run=run
     )
 
 

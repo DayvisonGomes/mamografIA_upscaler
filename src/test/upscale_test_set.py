@@ -1,7 +1,5 @@
 import argparse
 import os
-from pathlib import Path
-import nibabel as nib
 import numpy as np
 import pandas as pd
 import torch
@@ -12,10 +10,15 @@ from generative.networks.schedulers import DDIMScheduler
 from monai import transforms
 from monai.config import print_config
 from monai.data import Dataset
-from monai.utils import set_determinism
+from monai.utils import set_determinism, first
 from omegaconf import OmegaConf
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+import torch.nn.functional as F
+import tifffile
+from generative.metrics import SSIMMetric, MultiScaleSSIMMetric
+from monai.metrics import MAEMetric, PSNRMetric
+from torch.cuda.amp import autocast
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -40,8 +43,8 @@ if __name__ == '__main__':
     set_determinism(seed=args.seed)
     print_config()
 
-    #output_dir = "/project/outputs/runs/upcale_test_set"
     output_dir = args.output_dir
+    #output_dir = '/project/src/train'
     os.makedirs(output_dir, exist_ok=True)
     
     print("Creating model...")
@@ -58,38 +61,41 @@ if __name__ == '__main__':
     diffusion = diffusion.to(device)
     diffusion.eval()
 
-    scheduler = DDIMScheduler(
-        num_train_timesteps=config["ldm"]["scheduler"]["num_train_timesteps"],
-        beta_start=config["ldm"]["scheduler"]["beta_start"],
-        beta_end=config["ldm"]["scheduler"]["beta_end"],
-        schedule=config["ldm"]["scheduler"]["schedule"],
-        prediction_type=config["ldm"]["scheduler"]["prediction_type"],
-        clip_sample=False,
-    )
+    scheduler = DDIMScheduler(**config["ldm"].get("scheduler", dict()))
     scheduler.set_timesteps(args.num_inference_steps)
 
     df = pd.read_csv(args.test_ids, sep="\t")
-    df = df[args.start_index : args.stop_index]
+    #df = df[args.start_index : args.stop_index]
 
     data_dicts = []
     for index, row in df.iterrows():
         data_dicts.append(
             {
                 "image": str(row["image"]),
+                #"low_res_image": str(row['low_res_image'])
             }
         )
-
-    image_size = 256
-    low_res_size = 64
+    print(f"{len(data_dicts)} imagens.")
+    
+    roi_image_size = 416
+    roi_low_res_size = 291
+    low_res_size = 208
+    
     eval_transforms = transforms.Compose(
         [
-        transforms.LoadImaged(keys=["image"]),
-        transforms.EnsureChannelFirstd(keys=["image"]),
-        transforms.ScaleIntensityd(keys=["image"], minv=0.0, maxv=1.0),
-        transforms.CopyItemsd(keys=["image"], times=1, names=["low_res_image"]),
-        transforms.Resized(keys=["image"], spatial_size=(image_size, image_size)),
-        transforms.Resized(keys=["low_res_image"], spatial_size=(low_res_size, low_res_size)),
-        transforms.ToTensord(keys=["image", "low_res_image"]),
+        #   transforms.LoadImaged(keys=["image", "low_res_image"]),
+        #   transforms.EnsureChannelFirstd(keys=["image", "low_res_image"]),
+        #   transforms.ScaleIntensityd(keys=["image", "low_res_image"], minv=0.0, maxv=1.0),
+          transforms.LoadImaged(keys=["image"]),
+          transforms.EnsureChannelFirstd(keys=["image"]),
+          transforms.ScaleIntensityd(keys=["image"], minv=0.0, maxv=1.0),
+          transforms.CopyItemsd(keys=["image"], times=1, names=["low_res_image"]),
+
+          transforms.Resized(keys=["image"], spatial_size=(256, 256)),
+          #transforms.CenterSpatialCropD(keys=["image"], roi_size=(roi_image_size,roi_image_size)),
+          #transforms.CenterSpatialCropD(keys=["low_res_image"], roi_size=(roi_low_res_size,roi_low_res_size)),
+          transforms.Resized(keys=["low_res_image"], spatial_size=(128, 128)),
+          transforms.ToTensord(keys=["image", "low_res_image"]),
         ]
     )
 
@@ -97,20 +103,40 @@ if __name__ == '__main__':
         data=data_dicts,
         transform=eval_transforms,
     )
+    batch_size = 1
     eval_loader = DataLoader(
         eval_ds,
-        batch_size=1,
+        batch_size=batch_size,
         shuffle=False,
         num_workers=4,
     )
+    #with torch.no_grad():
+    #    with autocast(enabled=True):
+    #        z = stage1.encode_stage_2_inputs(first(eval_loader)["image"].to('cuda'))
 
+    #print(f"Scaling factor set to {1/torch.std(z)}")
+    #scale_factor = 1 / torch.std(z)
+    scale_factor = args.scale_factor
+    
+    psnr_metric = PSNRMetric(max_val=1.0)
+    mae_metric = MAEMetric()
+    mssim_metric = MultiScaleSSIMMetric(spatial_dims=2, kernel_size=7)
+    ssim_metric = SSIMMetric(spatial_dims=2, kernel_size=7)
+    
+    psnr_total = 0
+    mae_total = 0
+    mssim_total = 0
+    ssim_total = 0
+    quant_imgs = 0
+    
     for batch in tqdm(eval_loader):
         low_res_image = batch["low_res_image"].to(device)
-
-        latents = torch.randn((1, config["ldm"]["params"]["out_channels"], args.x_size, args.y_size)).to(
+        image = batch['image'].to(device)
+        
+        latents = torch.randn((low_res_image.shape[0], config["ldm"]["params"]["out_channels"], args.x_size, args.y_size)).to(
             device
         )
-        low_res_noise = torch.randn((1, 1, args.x_size, args.y_size)).to(device)
+        low_res_noise = torch.randn((low_res_image.shape[0], 1, args.x_size, args.y_size)).to(device)
 
         noise_level = torch.Tensor((args.noise_level,)).long().to(device)
         noisy_low_res_image = scheduler.add_noise(
@@ -118,9 +144,12 @@ if __name__ == '__main__':
             noise=low_res_noise,
             timesteps=torch.Tensor((noise_level,)).long().to(device),
         )
+        #noisy_low_res_image = F.pad(noisy_low_res_image, (0, 1, 0, 1))  
+
         scheduler.set_timesteps(num_inference_steps=args.num_inference_steps)
         for t in tqdm(scheduler.timesteps, ncols=110):
             with torch.no_grad():
+                #with autocast(enabled=True):
                 latent_model_input = torch.cat([latents, noisy_low_res_image], dim=1)
                 noise_pred = diffusion(
                     x=latent_model_input,
@@ -130,15 +159,59 @@ if __name__ == '__main__':
                 latents, _ = scheduler.step(noise_pred, t, latents)
 
         with torch.no_grad():
-            sample = stage1.decode_stage_2_outputs(latents / args.scale_factor)
+            sample = stage1.decode_stage_2_outputs(latents / scale_factor)
+        
+        # plt.figure(figsize=(8,8))
+        # plt.style.use("default")
+        # plt.imshow(
+        #     torch.cat([image[0, 0].cpu(), sample[0, 0].cpu()], dim=1),
+        #     vmin=0,
+        #     vmax=1,
+        #     cmap="gray",
+        # )
+        # plt.tight_layout()
+        # plt.axis("off")
+        # plt.show()
+        
+        psnr_value = psnr_metric(image, sample)
+        mae_value = mae_metric(image, sample)
+        mssim_value = mssim_metric(image, sample)
+        ssim_value = ssim_metric(image, sample)
+        
+        quant_imgs += low_res_image.shape[0]
 
-        img_name = batch["image_meta_dict"]["filename_or_obj"][0]
-        
-        path_img = os.path.join(output_dir, img_name)
-        path_img_down = os.path.join(output_dir, img_name + '_downscale')
-        path_img_up = os.path.join(output_dir, img_name + '_upscale')
-        
-        mpimg.imsave(path_img + '.png', batch['image'][0,0], cmap=plt.cm.gray)
-        mpimg.imsave(path_img_down + '.png', low_res_image[0,0], cmap=plt.cm.gray)
-        mpimg.imsave(path_img_up + '.png', sample[0,0], cmap=plt.cm.gray)
-        
+        for idx, image_batch in enumerate(batch['image']):
+            psnr_total += psnr_value[idx,0].item()
+            mae_total += mae_value[idx,0].item()
+            mssim_total += mssim_value[idx,0].item()
+            ssim_total += ssim_value[idx,0].item()
+            
+            img_name = batch['image_meta_dict']['filename_or_obj'][idx].split('/')[-1].split(".dcm")[0]
+            path_img_up_tiff = os.path.join(output_dir, f"{img_name}_upscale.tif")
+            path_img_tiff = os.path.join(output_dir, f"{img_name}.tif")
+            print(path_img_tiff)
+            img_upscale = sample[idx, 0].cpu().numpy()
+            img = batch['image'][idx, 0].cpu().numpy()
+            
+            tifffile.imwrite(path_img_tiff, img)  
+            tifffile.imwrite(path_img_up_tiff, img_upscale)  
+            
+        #torch.cuda.empty_cache()
+    
+    output_logs = os.path.join(output_dir, 'logs')
+    os.makedirs(output_logs, exist_ok=True)
+    output_file_path = os.path.join(output_logs, 'log.txt')
+    
+    with open(output_file_path, 'w', encoding='utf-8') as file:
+        file.write(f'Modelo: {args.diffusion_path}\n')
+        file.write('Validação:\n')
+        file.write('-------------------------------------------------\n')
+        file.write(f"PSNR médio: {psnr_total / (quant_imgs + 1)}\n")
+        file.write(f"MAE médio: {mae_total / (quant_imgs + 1)}\n")
+        file.write(f"MSSIM médio: {mssim_total / (quant_imgs + 1)}\n")
+        file.write(f"SSIM médio: {ssim_total / (quant_imgs + 1)}\n")
+    
+    print('PSNR: ',psnr_total / (quant_imgs + 1))
+    print('MAE: ',mae_total / (quant_imgs + 1))
+    print('MSSIM: ',mssim_total / (quant_imgs + 1))
+    print('SSIM: ',ssim_total / (quant_imgs + 1))
