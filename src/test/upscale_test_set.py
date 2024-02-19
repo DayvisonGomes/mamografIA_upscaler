@@ -6,7 +6,7 @@ import torch
 import matplotlib.image as mpimg
 import matplotlib.pyplot as plt
 from generative.networks.nets import AutoencoderKL, DiffusionModelUNet
-from generative.networks.schedulers import DDIMScheduler
+from generative.networks.schedulers import DDPMScheduler
 from monai import transforms
 from monai.config import print_config
 from monai.data import Dataset
@@ -61,12 +61,22 @@ if __name__ == '__main__':
     diffusion = diffusion.to(device)
     diffusion.eval()
 
-    scheduler = DDIMScheduler(**config["ldm"].get("scheduler", dict()))
+    scheduler = DDPMScheduler(**config["ldm"].get("scheduler", dict()))
     scheduler.set_timesteps(args.num_inference_steps)
 
     df = pd.read_csv(args.test_ids, sep="\t")
     #df = df[args.start_index : args.stop_index]
-
+    
+    # samples_dir = os.listdir(args.downsampled_dir)
+    # samples_datalist = []
+    
+    # for sample_path in sorted(samples_dir):
+    #     samples_datalist.append(
+    #         {
+    #             "low_res_image": str(sample_path),
+    #         }
+    #     )
+        
     data_dicts = []
     for index, row in df.iterrows():
         data_dicts.append(
@@ -149,29 +159,18 @@ if __name__ == '__main__':
         scheduler.set_timesteps(num_inference_steps=args.num_inference_steps)
         for t in tqdm(scheduler.timesteps, ncols=110):
             with torch.no_grad():
-                #with autocast(enabled=True):
-                latent_model_input = torch.cat([latents, noisy_low_res_image], dim=1)
-                noise_pred = diffusion(
-                    x=latent_model_input,
-                    timesteps=torch.Tensor((t,)).to(device),
-                    class_labels=noise_level,
-                )
+                with autocast(enabled=True):
+                    latent_model_input = torch.cat([latents, noisy_low_res_image], dim=1)
+                    noise_pred = diffusion(
+                        x=latent_model_input,
+                        timesteps=torch.Tensor((t,)).to(device),
+                        class_labels=noise_level,
+                    )
+                    
                 latents, _ = scheduler.step(noise_pred, t, latents)
 
         with torch.no_grad():
             sample = stage1.decode_stage_2_outputs(latents / scale_factor)
-        
-        # plt.figure(figsize=(8,8))
-        # plt.style.use("default")
-        # plt.imshow(
-        #     torch.cat([image[0, 0].cpu(), sample[0, 0].cpu()], dim=1),
-        #     vmin=0,
-        #     vmax=1,
-        #     cmap="gray",
-        # )
-        # plt.tight_layout()
-        # plt.axis("off")
-        # plt.show()
         
         psnr_value = psnr_metric(image, sample)
         mae_value = mae_metric(image, sample)
