@@ -15,4 +15,4 @@ spacy
 tensorboardX
 wandb
 tifffile
-transformers[torch]==4.30.2
+transformers[torch]
