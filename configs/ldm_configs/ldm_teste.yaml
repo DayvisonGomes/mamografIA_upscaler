@@ -5,11 +5,13 @@ ldm:
     in_channels: 4 # 16
     out_channels: 3 # 15
     num_res_blocks: 2
-    num_channels: [256, 256, 512] #256, 256 # [256, 256, 512, 1024]
-    attention_levels: [False, False, True] # false, true # [False, False, True, True]
-    num_head_channels: [0, 0, 64] #0, 64 # [0, 0, 64, 64]
+    num_channels: [256, 256] #256, 256 # [256, 256, 512, 1024]
+    attention_levels: [False, True] # false, true # [False, False, True, True]
+    num_head_channels: [0, 64] #0, 64 # [0, 0, 64, 64]
   scheduler:
     schedule: "linear_beta"
     num_train_timesteps: 1000
     beta_start: 0.0015
     beta_end: 0.0195
+
+# ARQUIVO ORIGINAL COM OS RESULTADOS ATUAIS

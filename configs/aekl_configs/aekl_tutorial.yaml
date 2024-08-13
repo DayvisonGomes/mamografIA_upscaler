@@ -8,12 +8,11 @@ stage1:
     spatial_dims: 2
     in_channels: 1
     out_channels: 1
-    num_channels: [128, 128] # [128, 128] Original
-    latent_channels: 15 # 15
+    num_channels: [256, 512, 512] # [128, 128] Original
+    latent_channels: 3
     num_res_blocks: 2
-    attention_levels: [False, False]
-    #with_encoder_nonlocal_attn: False # sem
-    #with_decoder_nonlocal_attn: False # sem
+    norm_num_groups: 32
+    attention_levels: [False, False, True]
 
 discriminator:
   params:
@@ -25,4 +24,4 @@ discriminator:
 perceptual_network:
   params:
     spatial_dims: 2
-    network_type: "alex" #alex
+    network_type: "alex"

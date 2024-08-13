@@ -12,7 +12,7 @@ class ClassificarBrilho(transforms.Transform):
 
     def __call__(self, img):
         brilho_medio = np.mean(img)
-        classificacao = "Clara" if brilho_medio > self.limiar_brilho else "Escura"
+        classificacao = "Densa" if brilho_medio > self.limiar_brilho else "Menos Densa"
         return classificacao
 
 def classificar_imagem_com_transformacoes(caminho_imagem, img_transforms, limiar_brilho=0.3):

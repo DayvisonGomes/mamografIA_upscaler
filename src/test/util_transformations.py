@@ -219,7 +219,7 @@ def get_upsampler_dataloader(batch_size: int,training_ids: str, validation_ids: 
     roi_low_res_size = 358 # 291
     low_res_size =  512 # 208
         
-    train_datalist = get_datalist(ids_path=training_ids)
+    train_datalist = get_datalist(ids_path=training_ids)[:1]
     val_datalist = get_datalist(ids_path=validation_ids)[:100]
     
     #img_max_pixel, img_low_max_pixel = get_max_pixel_values(train_datalist) #16254 #15971

@@ -1,0 +1,9 @@
+stage1:
+  base_lr: 0.0001
+  params:
+    spatial_dims: 2
+    in_shape: [1,512,512]
+    out_channels: 1
+    channels: [16, 32, 64]
+    latent_size: 3
+    strides: [1, 2, 2]

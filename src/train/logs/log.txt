@@ -1,7 +1,0 @@
-Modelo: /project/configs/ldm_configs/ldm_v0.yaml
-Validação:
--------------------------------------------------
-PSNR médio: 21.856666807144407
-MAE médio: 0.06858664842706824
-MSSIM médio: 0.5790897529749643
-SSIM médio: 0.6229200124267548

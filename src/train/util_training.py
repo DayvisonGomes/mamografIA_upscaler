@@ -9,6 +9,10 @@ from torch.cuda.amp import GradScaler, autocast
 from tqdm import tqdm
 import numpy as np
 import matplotlib.pyplot as plt
+from scipy.ndimage import gaussian_filter
+import wandb
+import tifffile
+from generative.metrics import MultiScaleSSIMMetric
 
 class EarlyStopping:
     """Early stops the training if validation loss doesn't improve after a given patience."""
@@ -95,7 +99,7 @@ def train_aekl(
     kl_weight: float,
     adv_start: int,
     output_dir: str,
-    #run
+    run
 ) -> float:
     
     scaler_g = GradScaler()
@@ -105,8 +109,9 @@ def train_aekl(
     model_save_path = os.path.join(output_dir, "aekl")
     os.makedirs(model_save_path, exist_ok=True)
     
-    early_stop = EarlyStopping(patience=7, verbose=True, path=os.path.join(model_save_path, "final_model_aekl_best.pth"))
-    
+    #early_stop = EarlyStopping(patience=7, verbose=True, path=os.path.join(model_save_path, "model_aekl_best_highLR_moreEpochs.pth"))
+    early_stop = EarlyStopping(patience=7, verbose=True, path=os.path.join(model_save_path, "model_aekl_best_3_latent_pulmao.pth"))
+
     val_loss = eval_aekl(
         model=model,
         discriminator=discriminator,
@@ -117,9 +122,12 @@ def train_aekl(
         kl_weight=kl_weight,
         adv_weight=adv_weight if start_epoch >= adv_start else 0.0,
         perceptual_weight=perceptual_weight,
+        run=run
     )
     early_stop(val_loss, model)
-    #run.log({'val_loss': val_loss})
+    print_gpu_memory_report()
+
+    run.log({'recons_loss_val': val_loss})
 
     print(f"epoch {start_epoch} val loss: {val_loss:.4f}")
     #torch.cuda.empty_cache()
@@ -139,7 +147,7 @@ def train_aekl(
             perceptual_weight=perceptual_weight,
             scaler_g=scaler_g,
             scaler_d=scaler_d,
-            #run=run
+            run=run
         )
         #torch.cuda.empty_cache()
         
@@ -153,12 +161,13 @@ def train_aekl(
                 step=len(train_loader) * epoch,
                 kl_weight=kl_weight,
                 adv_weight=adv_weight if epoch >= adv_start else 0.0,
-                perceptual_weight=perceptual_weight
+                perceptual_weight=perceptual_weight,
+                run=run
             )
             print(f"epoch {epoch + 1} val loss: {val_loss:.4f}")
             print_gpu_memory_report()
             early_stop(val_loss, model)
-            #run.log({'val_loss': val_loss})
+            run.log({'recons_loss_val': val_loss})
 
             #torch.cuda.empty_cache()
             
@@ -173,7 +182,8 @@ def train_aekl(
     print(f"Training finished!")
     print(f"Saving final model...")
     
-    torch.save(raw_model.state_dict(), os.path.join(model_save_path, "final_model_aekl.pth"))
+    #torch.save(raw_model.state_dict(), os.path.join(model_save_path, "model_aekl_highLR_moreEpochs.pth"))
+    torch.save(raw_model.state_dict(), os.path.join(model_save_path, "model_aekl_3_latent_pulmao.pth"))
 
     return val_loss
 
@@ -191,14 +201,16 @@ def train_epoch_aekl(
     perceptual_weight: float,
     scaler_g: GradScaler,
     scaler_d: GradScaler,
-    #run
+    run
 ) -> None:
     model.train()
     discriminator.train()
 
-    adv_loss = PatchAdversarialLoss(criterion="least_squares")
+    adv_loss = PatchAdversarialLoss(criterion="least_squares", no_activation_leastsq=True)
 
-    pbar = tqdm(enumerate(loader), total=len(loader))
+    pbar = tqdm(enumerate(loader), total=len(loader), ncols=110)
+    pbar.set_description(f"Epoch {epoch}")
+
     epoch_loss = 0
     gen_epoch_loss = 0
     disc_epoch_loss = 0
@@ -206,40 +218,28 @@ def train_epoch_aekl(
     
     for step, x in pbar:
         images = x["image"].to(device)
-
+        quant_batch += images.shape[0]
         # GENERATOR
         optimizer_g.zero_grad(set_to_none=True)
         with autocast(enabled=True):
-            reconstruction, z_mu, z_sigma = model(x=images)
-            recons_loss = F.l1_loss(reconstruction.float(), images.float())
-            p_loss = perceptual_loss(reconstruction.float(), images.float())
+            reconstruction, z_mu, z_sigma = model(images)
 
+            recons_loss = F.l1_loss(reconstruction.float(), images.float())
+            #recons_loss = F.smooth_l1_loss(reconstruction.float(), images.float())
+            p_loss = perceptual_loss(reconstruction.float(), images.float())
             kl_loss = 0.5 * torch.sum(z_mu.pow(2) + z_sigma.pow(2) - torch.log(z_sigma.pow(2)) - 1, dim=[1, 2, 3])
             kl_loss = torch.sum(kl_loss) / kl_loss.shape[0]
-
             loss_g = recons_loss + (kl_weight * kl_loss) + (perceptual_weight * p_loss)
 
             if adv_weight > 0:
                 logits_fake = discriminator(reconstruction.contiguous().float())[-1]
                 generator_loss = adv_loss(logits_fake, target_is_real=True, for_discriminator=False)
                 loss_g += adv_weight * generator_loss
-                
-            else:
-                generator_loss = torch.tensor([0.0]).to(device)
 
         scaler_g.scale(loss_g).backward()
         scaler_g.step(optimizer_g)
         scaler_g.update()
 
-        losses = OrderedDict(
-            loss=loss_g,
-            l1_loss=recons_loss,
-            p_loss=p_loss,
-            kl_loss=kl_loss,
-            g_loss=generator_loss,
-        )
-
-        # DISCRIMINATOR
         if adv_weight > 0:
             optimizer_d.zero_grad(set_to_none=True)
 
@@ -255,29 +255,24 @@ def train_epoch_aekl(
             scaler_d.scale(loss_d).backward()
             scaler_d.step(optimizer_d)
             scaler_d.update()
-  
-        else:
-            discriminator_loss = torch.tensor([0.0]).to(device)
 
         epoch_loss += recons_loss.item()
-        quant_batch += 1
         if adv_weight > 0:
             gen_epoch_loss += generator_loss.item()
             disc_epoch_loss += discriminator_loss.item()
-            
-        losses["d_loss"] = discriminator_loss
+
         pbar.set_postfix(
             {
-                "epoch": epoch,
-                "loss": f"{losses['loss'].item():.6f}",
-                "l1_loss": f"{(epoch_loss / (step + 1)):.6f}",
-                "p_loss": f"{losses['p_loss'].item():.6f}",
-                "g_loss": f"{(gen_epoch_loss / (step + 1)):.6f}",
-                "d_loss": f"{(disc_epoch_loss / (step + 1)):.6f}",
-            },
+                "recons_loss": epoch_loss / (step + 1),
+                "gen_loss": gen_epoch_loss / (step + 1),
+                "disc_loss": disc_epoch_loss / (step + 1),
+            }
         )
-    #run.log({'loss': epoch_loss / (quant_batch + 1)})
-
+        
+    run.log({'recons_loss_train': epoch_loss / (quant_batch + 1)})
+    run.log({'gen_loss': gen_epoch_loss / (quant_batch + 1)})
+    run.log({'disc_loss': disc_epoch_loss / (quant_batch + 1)})
+  
 def eval_aekl(
     model: nn.Module,
     discriminator: nn.Module,
@@ -287,13 +282,17 @@ def eval_aekl(
     step: int,
     kl_weight: float,
     adv_weight: float,
-    perceptual_weight: float
+    perceptual_weight: float,
+    run,
 ) -> float:
     model.eval()
     discriminator.eval()
 
-    adv_loss = PatchAdversarialLoss(criterion="least_squares")
+    adv_loss = PatchAdversarialLoss(criterion="least_squares", no_activation_leastsq=True)
     total_losses = OrderedDict()
+    
+    original_images = []
+    reconstructed_images = []
     
     for x in loader:
         images = x["image"].to(device)
@@ -346,10 +345,24 @@ def eval_aekl(
             
             for k, v in losses.items():
                 total_losses[k] = total_losses.get(k, 0) + v.item() * images.shape[0]
-
+            
+            original_images.append(images.cpu())
+            reconstructed_images.append(reconstruction.cpu())
+            
     for k in total_losses.keys():
         total_losses[k] /= len(loader.dataset)
 
+    batch_idx = torch.randint(len(original_images), (1,)).item()
+    image_idx = torch.randint(original_images[batch_idx].shape[0], (1,)).item()
+    original_image = original_images[batch_idx][image_idx]
+    reconstructed_image = reconstructed_images[batch_idx][image_idx]
+
+    run.log({
+        f"Original Image Epoch {step}": wandb.Image(original_image),
+        f"Reconstructed Image Epoch {step}": wandb.Image(reconstructed_image),
+        "Step": step
+    })
+    
     return total_losses["l1_loss"]
 
 def train_upsampler_ldm(
@@ -367,14 +380,18 @@ def train_upsampler_ldm(
     device: torch.device,
     output_dir:str,
     scale_factor: float,
-    #run    
+    run,
+    resnet_encoder,
+    text_encoder
 ) -> float:
     scaler = GradScaler()
     raw_model = model.module if hasattr(model, "module") else model
     
     model_save_path = os.path.join(output_dir, "ldm")
     os.makedirs(model_save_path, exist_ok=True)
-    early_stop = EarlyStopping(patience=10, verbose=True, path=os.path.join(model_save_path, "final_model_ldm_best.pth"))
+    #early_stop = EarlyStopping(patience=17, verbose=True, path=os.path.join(model_save_path, "final_model_ldm_best_final.pth"))
+    early_stop = EarlyStopping(patience=21, verbose=True, path=os.path.join(model_save_path, "model_ldm_best_3_latent_pulmao_mask.pth"))
+    #early_stop = EarlyStopping(patience=14, verbose=True, path=os.path.join(model_save_path, "model_ldm_best_0403.pth"))
 
     val_loss = eval_upsampler_ldm(
         model=model,
@@ -385,9 +402,12 @@ def train_upsampler_ldm(
         device=device,
         step=len(train_loader) * start_epoch,
         scale_factor=scale_factor,
+        run=run,
+        resnet_encoder=resnet_encoder,
+        text_encoder=text_encoder
     )
     early_stop(val_loss, model)
-    #run.log({'val_loss': val_loss})
+    run.log({'mse_val_loss': val_loss})
 
     print(f"epoch {start_epoch} val loss: {val_loss:.4f}")
     #torch.cuda.empty_cache()        
@@ -404,7 +424,9 @@ def train_upsampler_ldm(
             epoch=epoch,
             scaler=scaler,
             scale_factor=scale_factor,
-            #run=run
+            run=run,
+            resnet_encoder=resnet_encoder,
+            text_encoder=text_encoder
         )
         #torch.cuda.empty_cache()
 
@@ -418,6 +440,294 @@ def train_upsampler_ldm(
                 device=device,
                 step=len(train_loader) * epoch,
                 scale_factor=scale_factor,
+                run=run,
+                resnet_encoder=resnet_encoder,
+                text_encoder=text_encoder
+            )
+            #torch.cuda.empty_cache()
+            early_stop(val_loss, model)
+            run.log({'mse_val_loss': val_loss})
+
+            print(f"epoch {epoch + 1} val loss: {val_loss:.4f}")
+            print_gpu_memory_report()
+
+            if val_loss <= best_loss:
+                print(f"New best val loss {val_loss}")
+                best_loss = val_loss
+            
+            if early_stop.early_stop:
+                print("Early stopping")
+                break
+            
+    print(f"Training finished!")
+    print(f"Saving final model...")
+    
+    #torch.save(raw_model.state_dict(), os.path.join(model_save_path, "final_model_ldm_final.pth"))
+    #torch.save(raw_model.state_dict(), os.path.join(model_save_path, "model_ldm_0403.pth"))
+    torch.save(raw_model.state_dict(), os.path.join(model_save_path, "model_ldm_3_latent_pulmao_mask.pth"))
+
+    return val_loss
+
+def train_epoch_upsampler_ldm(
+    model: nn.Module,
+    stage1: nn.Module,
+    scheduler: nn.Module,
+    low_res_scheduler: nn.Module,
+    loader: torch.utils.data.DataLoader,
+    optimizer: torch.optim.Optimizer,
+    device: torch.device,
+    epoch: int,
+    scaler: GradScaler,
+    scale_factor: float,
+    run,
+    resnet_encoder,
+    text_encoder
+) -> None:
+    model.train()
+    stage1.eval()
+    epoch_loss = 0
+    quant_batch = 0
+    
+    pbar = tqdm(enumerate(loader), total=len(loader), ncols=110)
+    
+    for step, x in pbar:
+        images = x["image"].to(device)
+        low_res_image = x["low_res_image"].to(device)
+        quant_batch += images.shape[0]
+        reports = x["report"].to(device)
+
+        # for lung mask
+        mask_path = x['filename'][0] + '_mask.tiff'
+        mask_img = tifffile.imread(os.path.join('/project/data_lung_mask',mask_path))
+        closed_lung_mask_tensor = torch.tensor(mask_img, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
+        closed_lung_mask_tensor = closed_lung_mask_tensor.repeat(1, 3, 1, 1).to(images.device)
+        #
+        
+        timesteps = torch.randint(0, scheduler.num_train_timesteps, (images.shape[0],), device=images.device).long()
+        low_res_timesteps = torch.randint(
+                0, 350, (low_res_image.shape[0],), device=low_res_image.device
+        ).long()
+            
+        optimizer.zero_grad(set_to_none=True)
+        with autocast(enabled=True):
+            with torch.no_grad():
+                latent = stage1.encode_stage_2_inputs(images) * scale_factor
+                #latent = stage1.encode(images) * scale_factor
+
+            #prompt_embeds = text_encoder(reports.squeeze(1))
+            #prompt_embeds = prompt_embeds[0]
+            
+            noise = torch.randn_like(latent).to(device)
+            low_res_noise = torch.randn_like(low_res_image).to(device)
+
+            noisy_latent = scheduler.add_noise(original_samples=latent, noise=noise, timesteps=timesteps)
+            noisy_low_res_image = low_res_scheduler.add_noise(
+                original_samples=low_res_image, noise=low_res_noise, timesteps=low_res_timesteps
+            )
+
+            latent_model_input = torch.cat([noisy_latent, noisy_low_res_image], dim=1)
+            #latent_model_input = torch.nn.functional.pad(latent_model_input, (1, 1, 1, 1), mode='constant', value=0)
+            #noise = torch.nn.functional.pad(noise, (1, 1, 1, 1), mode='constant', value=0)
+
+            # for lung mask
+            output_resnet = resnet_encoder(closed_lung_mask_tensor)
+            output_resnet = output_resnet.view(-1, 512).unsqueeze(0)
+            
+            noise_pred = model(x=latent_model_input, timesteps=timesteps, class_labels=low_res_timesteps, context=output_resnet)
+            loss = F.mse_loss(noise_pred.float(), noise.float())
+
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
+        
+        epoch_loss += loss.item()
+
+        pbar.set_postfix(
+            {
+                "epoch": epoch,
+                "loss": f"{(epoch_loss / (step + 1)):.4f}"
+            }
+        )
+    
+    run.log({'mse_train_loss': epoch_loss / (quant_batch + 1)})
+    
+def eval_upsampler_ldm(
+    model: nn.Module,
+    stage1: nn.Module,
+    scheduler: nn.Module,
+    low_res_scheduler: nn.Module,
+    loader: torch.utils.data.DataLoader,
+    device: torch.device,
+    step,
+    scale_factor,
+    run,
+    resnet_encoder,
+    text_encoder
+) -> float:
+    
+    model.eval()
+    stage1.eval()
+    total_losses = OrderedDict()
+
+    for x in loader:
+        images = x["image"].to(device)
+        low_res_image = x["low_res_image"].to(device)
+        reports = x["report"].to(device)
+
+        # for lung mask
+        mask_path = x['filename'][0] + '_mask.tiff'
+        mask_img = tifffile.imread(os.path.join('/project/data_lung_mask',mask_path))
+        closed_lung_mask_tensor = torch.tensor(mask_img, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
+        closed_lung_mask_tensor = closed_lung_mask_tensor.repeat(1, 3, 1, 1).to(images.device)
+        #
+        
+        timesteps = torch.randint(0, scheduler.num_train_timesteps, (images.shape[0],), device=images.device).long()
+        low_res_timesteps = torch.randint(
+                0, 350, (low_res_image.shape[0],), device=low_res_image.device
+        ).long()
+        
+        with torch.no_grad():
+            with autocast(enabled=True):
+                latent = stage1.encode_stage_2_inputs(images) * scale_factor
+                #latent = stage1.encode(images) * scale_factor
+
+                #prompt_embeds = text_encoder(reports.squeeze(1))
+                #prompt_embeds = prompt_embeds[0]
+            
+                noise = torch.randn_like(latent).to(device)
+                low_res_noise = torch.randn_like(low_res_image).to(device)
+                
+                noisy_latent = scheduler.add_noise(original_samples=latent, noise=noise, timesteps=timesteps)
+                noisy_low_res_image = low_res_scheduler.add_noise(
+                    original_samples=low_res_image, noise=low_res_noise, timesteps=low_res_timesteps
+                )
+                
+                latent_model_input = torch.cat([noisy_latent, noisy_low_res_image], dim=1)
+                #latent_model_input = torch.nn.functional.pad(latent_model_input, (1, 1, 1, 1), mode='constant', value=0)
+                #noise = torch.nn.functional.pad(noise, (1, 1, 1, 1), mode='constant', value=0)
+                
+                # for lung mask
+                output_resnet = resnet_encoder(closed_lung_mask_tensor)
+                output_resnet = output_resnet.view(-1, 512).unsqueeze(0)
+                
+                noise_pred = model(x=latent_model_input, timesteps=timesteps, class_labels=low_res_timesteps,context=output_resnet)
+                loss = F.mse_loss(noise_pred.float(), noise.float())
+
+            losses = OrderedDict(loss=loss)
+
+            for k, v in losses.items():
+                total_losses[k] = total_losses.get(k, 0) + v.item() * images.shape[0]
+    
+    # Sampling image during training
+    sampling_image = low_res_image[0].unsqueeze(0)
+    latents = torch.randn((1, 4, 512, 512)).to(device)
+    low_res_noise = torch.randn((1, 1, 512, 512)).to(device)
+    noise_level = 1
+    noise_level = torch.Tensor((noise_level,)).long().to(device)
+    noisy_low_res_image = scheduler.add_noise(
+        original_samples=sampling_image,
+        noise=low_res_noise,
+        timesteps=torch.Tensor((noise_level,)).long().to(device),
+    )
+
+    scheduler.set_timesteps(num_inference_steps=1000)
+    for t in tqdm(scheduler.timesteps, ncols=110):
+        with torch.no_grad():
+            with autocast(enabled=True):
+                latent_model_input = torch.cat([latents, noisy_low_res_image], dim=1)
+                noise_pred = model(
+                    x=latent_model_input, timesteps=torch.Tensor((t,)).to(device), class_labels=noise_level,
+                    context=output_resnet
+                )
+            latents, _ = scheduler.step(noise_pred, t, latents)
+
+    with torch.no_grad():
+        decoded = stage1.decode_stage_2_outputs(latents / scale_factor)
+    
+    mssim_metric = MultiScaleSSIMMetric(spatial_dims=2, kernel_size=7)
+    mssim_value = mssim_metric(images, decoded)
+
+    print('MSSIM:', mssim_value[0,0].item())
+    run.log({
+        f"Original Image Epoch {step}": wandb.Image(images[0, 0].cpu()),
+        f"Upscale Image Epoch {step}": wandb.Image(decoded[0, 0].cpu().numpy().astype(np.float32)),
+        "Step": step
+    })
+    
+    for k in total_losses.keys():
+        total_losses[k] /= len(loader.dataset)
+
+    return total_losses["loss"]
+
+
+def train_upsampler_ldm_without_low_res(
+    model: nn.Module,
+    stage1: nn.Module,
+    scheduler: nn.Module,
+    low_res_scheduler: nn.Module,
+    start_epoch: int,
+    best_loss: float,
+    train_loader: torch.utils.data.DataLoader,
+    val_loader: torch.utils.data.DataLoader,
+    optimizer: torch.optim.Optimizer,
+    n_epochs: int,
+    eval_freq: int,
+    device: torch.device,
+    output_dir:str,
+    inferer
+    #run    
+) -> float:
+    scaler = GradScaler()
+    raw_model = model.module if hasattr(model, "module") else model
+    
+    model_save_path = os.path.join(output_dir, "ldm")
+    os.makedirs(model_save_path, exist_ok=True)
+    early_stop = EarlyStopping(patience=3, verbose=True, path=os.path.join(model_save_path, "model_ldm_best_2dldm.pth"))
+
+    val_loss = eval_upsampler_ldm_without_low_res(
+        model=model,
+        stage1=stage1,
+        scheduler=scheduler,
+        low_res_scheduler=low_res_scheduler,
+        loader=val_loader,
+        device=device,
+        step=len(train_loader) * start_epoch,
+        inferer=inferer
+
+    )
+    early_stop(val_loss, model)
+    #run.log({'val_loss': val_loss})
+
+    print(f"epoch {start_epoch} val loss: {val_loss:.4f}")
+    #torch.cuda.empty_cache()        
+    
+    for epoch in range(start_epoch, n_epochs):
+        train_epoch_upsampler_ldm_without_low_res(
+            model=model,
+            stage1=stage1,
+            scheduler=scheduler,
+            low_res_scheduler=low_res_scheduler,
+            loader=train_loader,
+            optimizer=optimizer,
+            device=device,
+            epoch=epoch,
+            scaler=scaler,
+            inferer=inferer
+            #run=run
+        )
+        #torch.cuda.empty_cache()
+
+        if (epoch + 1) % eval_freq == 0:
+            val_loss = eval_upsampler_ldm_without_low_res(
+                model=model,
+                stage1=stage1,
+                scheduler=scheduler,
+                low_res_scheduler=low_res_scheduler,
+                loader=val_loader,
+                device=device,
+                step=len(train_loader) * epoch,
+                inferer=inferer
+
             )
             #torch.cuda.empty_cache()
             early_stop(val_loss, model)
@@ -437,11 +747,11 @@ def train_upsampler_ldm(
     print(f"Training finished!")
     print(f"Saving final model...")
     
-    torch.save(raw_model.state_dict(), os.path.join(model_save_path, "final_model_ldm.pth"))
+    torch.save(raw_model.state_dict(), os.path.join(model_save_path, "model_ldm_2dldm.pth"))
 
     return val_loss
 
-def train_epoch_upsampler_ldm(
+def train_epoch_upsampler_ldm_without_low_res(
     model: nn.Module,
     stage1: nn.Module,
     scheduler: nn.Module,
@@ -451,40 +761,27 @@ def train_epoch_upsampler_ldm(
     device: torch.device,
     epoch: int,
     scaler: GradScaler,
-    scale_factor: float,
-    #run
+    inferer
+
 ) -> None:
     model.train()
     stage1.eval()
     epoch_loss = 0
     quant_batch = 0
     
-    pbar = tqdm(enumerate(loader), total=len(loader))
+    pbar = tqdm(enumerate(loader), total=len(loader), ncols=110)
     for step, x in pbar:
         images = x["image"].to(device)
-        low_res_image = x["low_res_image"].to(device)
 
         optimizer.zero_grad(set_to_none=True)
         with autocast(enabled=True):
-            with torch.no_grad():
-                latent = stage1.encode_stage_2_inputs(images) * scale_factor
-            
-            noise = torch.randn_like(latent).to(device)
-            low_res_noise = torch.randn_like(low_res_image).to(device)
-            
-            timesteps = torch.randint(0, scheduler.num_train_timesteps, (latent.shape[0],), device=latent.device).long()
-            low_res_timesteps = torch.randint(
-                0, 350, (low_res_image.shape[0],), device=low_res_image.device
-            ).long()
-
-            noisy_latent = scheduler.add_noise(original_samples=latent, noise=noise, timesteps=timesteps)
-            noisy_low_res_image = low_res_scheduler.add_noise(
-                original_samples=low_res_image, noise=low_res_noise, timesteps=low_res_timesteps
+            z_mu, z_sigma = stage1.encode(images)
+            z = stage1.sampling(z_mu, z_sigma)
+            noise = torch.randn_like(z).to(device)
+            timesteps = torch.randint(0, inferer.scheduler.num_train_timesteps, (z.shape[0],), device=z.device).long()
+            noise_pred = inferer(
+                inputs=images, diffusion_model=model, noise=noise, timesteps=timesteps, autoencoder_model=stage1
             )
-
-            latent_model_input = torch.cat([noisy_latent, noisy_low_res_image], dim=1)
-
-            noise_pred = model(x=latent_model_input, timesteps=timesteps, class_labels=low_res_timesteps)
             loss = F.mse_loss(noise_pred.float(), noise.float())
 
         scaler.scale(loss).backward()
@@ -492,18 +789,15 @@ def train_epoch_upsampler_ldm(
         scaler.update()
         
         epoch_loss += loss.item()
-
         pbar.set_postfix(
             {
                 "epoch": epoch,
-                "loss": f"{(epoch_loss / (step + 1)):.6f}"
+                "loss": f"{(epoch_loss / (step + 1)):.4f}"
             }
         )
-    
     #run.log({'loss': epoch_loss / (quant_batch + 1)})
     
-
-def eval_upsampler_ldm(
+def eval_upsampler_ldm_without_low_res(
     model: nn.Module,
     stage1: nn.Module,
     scheduler: nn.Module,
@@ -511,37 +805,35 @@ def eval_upsampler_ldm(
     loader: torch.utils.data.DataLoader,
     device: torch.device,
     step: int,
-    scale_factor: float = 1.0,
+    inferer
+
 ) -> float:
     
     model.eval()
     stage1.eval()
+
     total_losses = OrderedDict()
-
-    for x in loader:
-        images = x["image"].to(device)
-        low_res_image = x["low_res_image"].to(device)
-        
-        with torch.no_grad():
+    
+    with torch.no_grad():
+        for x in loader:
+            images = x["image"].to(device)
+                    
             with autocast(enabled=True):
-                latent = stage1.encode_stage_2_inputs(images) * scale_factor
+                z_mu, z_sigma = stage1.encode(images)
+                z = stage1.sampling(z_mu, z_sigma)
 
-                noise = torch.randn_like(latent).to(device)
-                low_res_noise = torch.randn_like(low_res_image).to(device)
+                noise = torch.randn_like(z).to(device)
                 timesteps = torch.randint(
-                    0, scheduler.num_train_timesteps, (latent.shape[0],), device=latent.device
+                    0, inferer.scheduler.num_train_timesteps, (z.shape[0],), device=z.device
                 ).long()
-                low_res_timesteps = torch.randint(
-                    0, 350, (low_res_image.shape[0],), device=low_res_image.device
-                ).long()
-
-                noisy_latent = scheduler.add_noise(original_samples=latent, noise=noise, timesteps=timesteps)
-                noisy_low_res_image = low_res_scheduler.add_noise(
-                    original_samples=low_res_image, noise=low_res_noise, timesteps=low_res_timesteps
+                noise_pred = inferer(
+                    inputs=images,
+                    diffusion_model=model,
+                    noise=noise,
+                    timesteps=timesteps,
+                    autoencoder_model=stage1,
                 )
 
-                latent_model_input = torch.cat([noisy_latent, noisy_low_res_image], dim=1)
-                noise_pred = model(x=latent_model_input, timesteps=timesteps, class_labels=low_res_timesteps)
                 loss = F.mse_loss(noise_pred.float(), noise.float())
 
             losses = OrderedDict(loss=loss)

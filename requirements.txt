@@ -15,4 +15,6 @@ spacy
 tensorboardX
 wandb
 tifffile
-transformers[torch]
+torchmetrics
+torch-fidelity
+pydantic==1.10.11
