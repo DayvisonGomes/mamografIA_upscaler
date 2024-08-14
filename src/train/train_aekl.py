@@ -66,7 +66,7 @@ if __name__ == '__main__':
     with open(args.config_file, 'r') as file:
         config_wandb = yaml.safe_load(file)
     
-    run = wandb.init(project="Artigo", name="AutoencoderKL-Clinical-Zero-Padding", config=config_wandb)
+    run = wandb.init(project="Artigo", name="AutoencoderKL-Lung-Multiclass-Mask", config=config_wandb)
         
     if args.checkpoint_path:
         print('Carregando checkpoint...')

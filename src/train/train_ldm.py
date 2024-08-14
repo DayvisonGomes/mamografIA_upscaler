@@ -86,7 +86,7 @@ if __name__ == '__main__':
         config_wandb = yaml.safe_load(file)
     
     #run = wandb.init(project="Artigo", name="LDM-Clinical-Zero-Padding", config=config_wandb)
-    run = wandb.init(project="Artigo", name="LDM-Clinical-Lung-Mask", config=config_wandb)
+    run = wandb.init(project="Artigo", name="LDM-Clinical-Lung-Multiclass-Mask", config=config_wandb)
 
     stage1.load_state_dict(torch.load(args.stage1_path))
     stage1.eval()
@@ -103,10 +103,10 @@ if __name__ == '__main__':
     low_res_scheduler = DDPMScheduler(**config["ldm"].get("scheduler", dict()))
     
     # for lung mask
-    resnet = models.resnet18(pretrained=True)
-    modules = list(resnet.children())[:-1]
-    resnet = nn.Sequential(*modules)
-    resnet_encoder = ResNetEncoder(resnet)
+    # resnet = models.resnet18(pretrained=True)
+    # modules = list(resnet.children())[:-1]
+    # resnet = nn.Sequential(*modules)
+    # resnet_encoder = ResNetEncoder(resnet)
 
     # Text model
     #text_encoder = CLIPTextModel.from_pretrained("stabilityai/stable-diffusion-2-1-base", subfolder="text_encoder")
@@ -124,7 +124,7 @@ if __name__ == '__main__':
     #text_encoder = text_encoder.to(device)
 
     # for lung mask
-    resnet_encoder = resnet_encoder.to(device)
+    #resnet_encoder = resnet_encoder.to(device)
     
     check_data = first(train_loader)
 
@@ -158,6 +158,6 @@ if __name__ == '__main__':
         output_dir=output_dir,
         scale_factor=scale_factor, #args.scale_factor
         run=run,
-        resnet_encoder=resnet_encoder,
+        resnet_encoder=None,
         text_encoder=None
     )

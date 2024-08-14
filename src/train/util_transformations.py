@@ -11,6 +11,8 @@ from monai.transforms import LoadImaged, EnsureChannelFirstd, CenterSpatialCropD
 import torch
 import cv2
 from custom_transforms import ApplyTokenizerd
+from lungmask import LMInferer
+import SimpleITK as sitk
 
 class LoadDICOM(MapTransform):
     """
@@ -57,6 +59,96 @@ class LoadDICOM(MapTransform):
 
         return d
 
+
+class LoadDICOMmask(MapTransform):
+    """
+    Custom transformation to load DICOM images with slope and intercept adjustment.
+    """
+
+    def __init__(self, keys, inferer ,reader=None):
+        super().__init__(keys)
+        self.reader = reader or pydicom.dcmread
+        self.inferer = inferer
+        
+    def create_lung_mask(self, image, threshold=0.8):
+        """Creates a binary mask to highlight lung structures.
+
+        Args:
+            image (np.array): The windowed CT image.
+            threshold (float): Relative threshold for segmentation.
+
+        Returns:
+            np.array: Binary mask with lung structures highlighted.
+        """
+        mask = np.zeros_like(image)
+        mask[image > threshold] = 1
+        return mask
+    
+    def create_segmentation_mask(self, image, inferer):
+
+        input_image = sitk.ReadImage(image)
+        segmentation = inferer.apply(input_image)
+
+        segmentation = segmentation.squeeze()
+        segmentation_np = np.array(segmentation)
+        
+        return segmentation_np
+
+    def __call__(self, data):
+        d = dict(data)
+
+        for key in self.key_iterator(d):
+            file_path = d[key]  
+
+            dicom_data = self.reader(file_path)
+            image_array = dicom_data.pixel_array
+
+            if 'RescaleSlope' in dicom_data:
+                rescale_slope = dicom_data.RescaleSlope
+            else:
+                rescale_slope = 1
+            
+            if 'RescaleIntercept' in dicom_data:
+                rescale_intercept = dicom_data.RescaleIntercept
+            else:
+                rescale_intercept = 0
+            
+            image_array = image_array * rescale_slope + rescale_intercept
+            w = float(dicom_data.WindowWidth)
+            c = float(dicom_data.WindowCenter)
+
+            y = np.zeros_like(image_array)
+            y[image_array <= (c - 0.5 - (w - 1) / 2)] = 0
+            y[image_array > (c - 0.5 + (w - 1) / 2)] = 1
+            mask = (image_array > (c - 0.5 - (w - 1) / 2)) & (image_array <= (c - 0.5 + (w - 1) / 2))
+            y[mask] = ((image_array[mask] - (c - 0.5)) / (w - 1) + 0.5) * (1 - 0) + 0
+
+            image_array = np.expand_dims(y, axis=0)
+
+            d[key] = image_array.astype(np.float32)
+            d['filename'] = file_path.split('/')[-1]
+            
+            closed_lung_mask = self.create_lung_mask(y, threshold=0.8)
+            segmentation_np = self.create_segmentation_mask(file_path, self.inferer)
+            segmentation_np = np.where(segmentation_np >= 1, 1, 0)
+            
+            filtered_with_closed_lung_mask = np.where(closed_lung_mask == 1, y, 0)
+            filtered_with_segmentation_np = np.where(segmentation_np == 1, y, 0)
+            #image with less high pixels
+            combined_filtered = np.maximum(filtered_with_closed_lung_mask, filtered_with_segmentation_np)
+
+            lung_mask_binary = np.where(closed_lung_mask != 0, 1, 0)
+            segmentation_np_mask = np.where(segmentation_np == 1, 2, 0)
+            segmentation_mask_colored = np.where(filtered_with_segmentation_np >= 0.4, 4, 0)
+
+            combined_mask = lung_mask_binary + segmentation_np_mask + segmentation_mask_colored
+            
+            d['mask'] = (combined_mask / combined_mask.max()).astype(np.float32)
+            combined_filtered = np.expand_dims(combined_filtered, axis=0)
+            d[key] = combined_filtered.astype(np.float32)
+            
+        return d
+    
 class Normalization(MapTransform):
     """
     Transformation to normalize the image by dividing each pixel by the maximum pixel value.
@@ -219,9 +311,12 @@ def get_upsampler_dataloader(batch_size: int,training_ids: str, validation_ids: 
     roi_low_res_size = 358 # 291
     low_res_size =  512 # 208
         
-    train_datalist = get_datalist(ids_path=training_ids)
-    val_datalist = get_datalist(ids_path=validation_ids)[:100]
+    train_datalist = get_datalist(ids_path=training_ids)[:10]
+    val_datalist = get_datalist(ids_path=validation_ids)[:10]
     
+    # model for segmentation of lung
+    inferer = LMInferer(modelname='R231CovidWeb')
+
     #img_max_pixel, img_low_max_pixel = get_max_pixel_values(train_datalist) #16254 #15971
     #dict = get_max_min_pixel_values(train_datalist)
     #print(dict['max_pixel_img'])
@@ -230,7 +325,9 @@ def get_upsampler_dataloader(batch_size: int,training_ids: str, validation_ids: 
         [
             #transforms.LoadImaged(keys=["image", "low_res_image"], reader='PILReader'),
             #transforms.LoadImaged(keys=["image"], reader='PILReader'),
-            LoadDICOM(keys=['image']),
+            #LoadDICOM(keys=['image']),
+            LoadDICOMmask(keys=['image'], inferer=inferer),
+
             #transforms.EnsureChannelFirstd(keys=["image", "low_res_image"]),
             transforms.EnsureChannelFirstd(keys=["image"], channel_dim=0),
             
@@ -262,8 +359,8 @@ def get_upsampler_dataloader(batch_size: int,training_ids: str, validation_ids: 
             transforms.Resized(keys=["low_res_image"],spatial_size=(low_res_size, low_res_size)),
             transforms.ThresholdIntensityd(keys=["image","low_res_image"], threshold=1, above=False, cval=1.0),
             transforms.ThresholdIntensityd(keys=["image","low_res_image"], threshold=0, above=True, cval=0),
-            ApplyTokenizerd(keys=["report"]),
-            transforms.ToTensord(keys=["image",'low_res_image','report']) 
+            #ApplyTokenizerd(keys=["report"]),
+            transforms.ToTensord(keys=["image",'low_res_image','mask']) 
         ]
     )
     
@@ -271,7 +368,8 @@ def get_upsampler_dataloader(batch_size: int,training_ids: str, validation_ids: 
         [
             #transforms.LoadImaged(keys=["image", "low_res_image"], reader='PILReader'),
             #transforms.LoadImaged(keys=["image"], reader='PILReader'),
-            LoadDICOM(keys=['image']),
+            #LoadDICOM(keys=['image']),
+            LoadDICOMmask(keys=['image'], inferer=inferer),
             
             #transforms.EnsureChannelFirstd(keys=["image", "low_res_image"]),
             transforms.EnsureChannelFirstd(keys=["image"], channel_dim=0),
@@ -290,8 +388,8 @@ def get_upsampler_dataloader(batch_size: int,training_ids: str, validation_ids: 
             transforms.Resized(keys=["low_res_image"],spatial_size=(low_res_size, low_res_size)),
             transforms.ThresholdIntensityd(keys=["image","low_res_image"], threshold=1, above=False, cval=1.0),
             transforms.ThresholdIntensityd(keys=["image","low_res_image"], threshold=0, above=True, cval=0),
-            ApplyTokenizerd(keys=["report"]),
-            transforms.ToTensord(keys=["image",'low_res_image','report']) 
+            #ApplyTokenizerd(keys=["report"]),
+            transforms.ToTensord(keys=["image",'low_res_image','mask']) 
             
         ]
     )
