@@ -16,6 +16,8 @@ from monai.metrics import MAEMetric, PSNRMetric
 from torch.cuda.amp import autocast
 from generative.inferers import LatentDiffusionInferer
 from monai.apps import MedNISTDataset
+from util_transformations import get_upsampler_dataloader
+from monai.utils import set_determinism, first
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -34,6 +36,7 @@ if __name__ == '__main__':
     parser.add_argument("--num_inference_steps", type=int, help="")
     parser.add_argument("--noise_level", type=int, help="")
     parser.add_argument("--test_ids", help="Location of file with test ids.")
+    parser.add_argument("--training_ids", help="Location of file with test ids.")
 
     args = parser.parse_args()
 
@@ -61,7 +64,7 @@ if __name__ == '__main__':
     scheduler = DDPMScheduler(**config["ldm"].get("scheduler", dict()))
     scheduler.set_timesteps(args.num_inference_steps)
     
-    df = pd.read_csv(args.test_ids, sep="\t")
+    #df = pd.read_csv(args.test_ids, sep="\t")
     #df = df[args.start_index : args.stop_index]
     
     # samples_dir = os.listdir(args.downsampled_dir)
@@ -99,40 +102,22 @@ if __name__ == '__main__':
     #       transforms.ToTensord(keys=["image"]),
     #     ]
     # )
-    path_root = '/project/sr_data_from_tutorial'
-    os.makedirs(path_root, exist_ok=True)
-    image_size = 64
-    
-    eval_transforms = transforms.Compose(
-        [
-          transforms.LoadImaged(keys=["image"]),
-          transforms.EnsureChannelFirstd(keys=["image"]),
-          transforms.ScaleIntensityd(keys=["image"], minv=0.0, maxv=1.0),
-          transforms.CenterSpatialCropD(keys=["image"], roi_size=(image_size,image_size)),
-          transforms.ToTensord(keys=["image"])
-        ]
-    )
-    val_data = MedNISTDataset(root_dir=path_root, section="validation", download=False, seed=0)
-    data_dicts = [{"image": item["image"]} for item in val_data.data if item["class_name"] == "Hand"]
-    
-    eval_ds = Dataset(
-        data=data_dicts,
-        transform=eval_transforms,
-    )
-    batch_size = 1
-    eval_loader = DataLoader(
-        eval_ds,
-        batch_size=batch_size,
-        shuffle=False,
+    train_loader, eval_loader = get_upsampler_dataloader(
+        batch_size=1,
+        training_ids=args.training_ids,
+        validation_ids=args.test_ids,
         num_workers=4,
     )
-    #with torch.no_grad():
-    #    with autocast(enabled=True):
-    #        z = stage1.encode_stage_2_inputs(first(eval_loader)["image"].to('cuda'))
+    check_data = first(train_loader)
 
-    #print(f"Scaling factor set to {1/torch.std(z)}")
-    #scale_factor = 1 / torch.std(z)
-    scale_factor = args.scale_factor
+    with torch.no_grad():
+        with autocast(enabled=True):
+            z = stage1.encode_stage_2_inputs(check_data["image"].to('cuda'))
+            #z = stage1.encode(check_data["image"].to('cuda'))
+
+    print(f"Scaling factor set to {1/torch.std(z)}")
+    scale_factor = 1 / torch.std(z)
+    #scale_factor = args.scale_factor
     inferer = LatentDiffusionInferer(scheduler, scale_factor=scale_factor)
 
     psnr_metric = PSNRMetric(max_val=1.0)
@@ -148,19 +133,29 @@ if __name__ == '__main__':
     
     for batch in tqdm(eval_loader, ncols=110):
         image = batch['image'].to(device)
+        mask_path = batch['filename'][0] + '_mask.tiff'
+        mask_img = tifffile.imread(os.path.join('/project/data_lung_multiclass_masks', mask_path))
+        mask_tensor = torch.tensor(mask_img, dtype=torch.float32).unsqueeze(0).to(image.device)
         
-        latents = torch.randn((image.shape[0], config["ldm"]["params"]["out_channels"], args.x_size, args.y_size)).to(
-            device
-        )
-       
+        #latents = torch.randn((image.shape[0], config["ldm"]["params"]["out_channels"], args.x_size, args.y_size)).to(
+        #    device
+        #)
+        latent = stage1.encode_stage_2_inputs(image) * inferer.scale_factor
+        noise = torch.randn_like(latent).to(device)
+        timesteps = torch.randint(
+                    0, inferer.scheduler.num_train_timesteps, (latent.shape[0],), device=latent.device
+            ).long()
+        noisy_latent = inferer.scheduler.add_noise(original_samples=latent, noise=noise, timesteps=timesteps)
+
         with torch.no_grad():
             decoded = inferer.sample(
-                input_noise=latents,
+                input_noise=noisy_latent,
                 diffusion_model=diffusion,
                 scheduler=scheduler,
                 save_intermediates=False,
                 intermediate_steps=100,
                 autoencoder_model=stage1,
+                conditioning=mask_tensor
             )
                 
         psnr_value = psnr_metric(image, decoded)
@@ -178,9 +173,9 @@ if __name__ == '__main__':
             mssim_total += mssim_value[idx,0].item()
             ssim_total += ssim_value[idx,0].item()
 
-            img_name = batch['image_meta_dict']['filename_or_obj'][idx].split('/')[-1].split(".dcm")[0]
-            path_img_up_tiff = os.path.join(output_dir, f"{img_name}_upscale.tif")
-            path_img_tiff = os.path.join(output_dir, f"{img_name}.tif")
+            #img_name = batch['image_meta_dict']['filename_or_obj'][idx].split('/')[-1].split(".dcm")[0]
+            path_img_up_tiff = os.path.join(output_dir, f"{ batch['filename'][0]}_upscale.tif")
+            path_img_tiff = os.path.join(output_dir, f"{ batch['filename'][0]}.tif")
             print(path_img_tiff)
             img_upscale = decoded[idx, 0].cpu().numpy()
             img = batch['image'][idx, 0].cpu().numpy()

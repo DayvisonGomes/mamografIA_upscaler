@@ -163,3 +163,7 @@ outputs/
 mlruns/
 /data
 /origin_data
+/sr_data_from_tutorial
+/data_lung_mask
+/data_lung_multiclass_masks
+/ct_noel

@@ -2,7 +2,7 @@ stage1:
   base_lr: 0.00005 #  00005
   disc_lr: 0.00001 # 0.0001  0.00001 # 5e-4 0.0005
   perceptual_weight: 0.1
-  adv_weight: 0.01 
+  adv_weight: 0.005 
   kl_weight: 0.0000001
   params:
     spatial_dims: 2

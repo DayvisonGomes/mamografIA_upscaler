@@ -11,6 +11,14 @@ from monai.transforms import LoadImaged, EnsureChannelFirstd, CenterSpatialCropD
 import torch
 import cv2
 from custom_transforms import ApplyTokenizerd
+from lungmask import LMInferer
+import SimpleITK as sitk
+from monai.data import PersistentDataset
+import scipy.ndimage as ndimage
+import tifffile
+
+# model for segmentation of lung
+#inferer = LMInferer(modelname='R231CovidWeb')
 
 class LoadDICOM(MapTransform):
     """
@@ -57,6 +65,86 @@ class LoadDICOM(MapTransform):
 
         return d
 
+
+class LoadDICOMmask(MapTransform):
+    """
+    Custom transformation to load DICOM images with slope and intercept adjustment.
+    """
+
+    def __init__(self, keys ,reader=None):
+        super().__init__(keys)
+        self.reader = reader or pydicom.dcmread
+        
+    def create_lung_mask(self, image, threshold=0.8):
+        """Creates a binary mask to highlight lung structures.
+
+        Args:
+            image (np.array): The windowed CT image.
+            threshold (float): Relative threshold for segmentation.
+
+        Returns:
+            np.array: Binary mask with lung structures highlighted.
+        """
+        mask = np.zeros_like(image)
+        mask[image > threshold] = 1
+        return mask
+    
+    def create_segmentation_mask(self, image, inferer):
+
+        input_image = sitk.ReadImage(image)
+        segmentation = inferer.apply(input_image)
+
+        segmentation = segmentation.squeeze()
+        segmentation_np = np.array(segmentation)
+        
+        return segmentation_np
+    
+    def fill_holes_in_mask(self, mask):
+        filled_mask = ndimage.binary_fill_holes(mask).astype(np.uint8)
+        return filled_mask
+    
+    def __call__(self, data):
+        d = dict(data)
+
+        for key in self.key_iterator(d):
+            file_path = d[key]  
+
+            dicom_data = self.reader(file_path)
+            image_array = dicom_data.pixel_array
+
+            if 'RescaleSlope' in dicom_data:
+                rescale_slope = dicom_data.RescaleSlope
+            else:
+                rescale_slope = 1
+            
+            if 'RescaleIntercept' in dicom_data:
+                rescale_intercept = dicom_data.RescaleIntercept
+            else:
+                rescale_intercept = 0
+            
+            image_array = image_array * rescale_slope + rescale_intercept
+            w = float(dicom_data.WindowWidth)
+            c = float(dicom_data.WindowCenter)
+
+            y = np.zeros_like(image_array)
+            y[image_array <= (c - 0.5 - (w - 1) / 2)] = 0
+            y[image_array > (c - 0.5 + (w - 1) / 2)] = 1
+            mask = (image_array > (c - 0.5 - (w - 1) / 2)) & (image_array <= (c - 0.5 + (w - 1) / 2))
+            y[mask] = ((image_array[mask] - (c - 0.5)) / (w - 1) + 0.5) * (1 - 0) + 0
+
+            #image_array = np.expand_dims(y, axis=0)
+
+            #d[key] = image_array.astype(np.float32)
+            d['filename'] = file_path.split('/')[-1]
+            mask_path = file_path.split('/')[-1] + '_mask.tiff'
+            mask_img = tifffile.imread(os.path.join('/project/data_lung_multiclass_masks', mask_path))
+            
+            combined_filtered = np.where(mask_img >= 0.5, y, 0)
+            combined_filtered = np.expand_dims(combined_filtered, axis=0)
+            d[key] = combined_filtered.astype(np.float32)
+            
+        return d
+    
 class Normalization(MapTransform):
     """
     Transformation to normalize the image by dividing each pixel by the maximum pixel value.
@@ -219,20 +307,22 @@ def get_upsampler_dataloader(batch_size: int,training_ids: str, validation_ids: 
     roi_low_res_size = 358 # 291
     low_res_size =  512 # 208
         
-    train_datalist = get_datalist(ids_path=training_ids)[:1]
+    train_datalist = get_datalist(ids_path=training_ids)[:10]
     val_datalist = get_datalist(ids_path=validation_ids)[:100]
-    
+
     #img_max_pixel, img_low_max_pixel = get_max_pixel_values(train_datalist) #16254 #15971
     #dict = get_max_min_pixel_values(train_datalist)
     #print(dict['max_pixel_img'])
     #print(dict['min_pixel_img'])
     train_transforms = transforms.Compose(
-        [
+        [   
             #transforms.LoadImaged(keys=["image", "low_res_image"], reader='PILReader'),
             #transforms.LoadImaged(keys=["image"], reader='PILReader'),
-            LoadDICOM(keys=['image']),
+            #LoadDICOM(keys=['image']),
+            LoadDICOMmask(keys=['image']),
+
             #transforms.EnsureChannelFirstd(keys=["image", "low_res_image"]),
-            transforms.EnsureChannelFirstd(keys=["image"], channel_dim=0),
+            transforms.EnsureChannelFirstd(keys=["image"], channel_dim=0), 
             
             #transforms.ScaleIntensityd(keys=["image", "low_res_image"], minv=0.0, maxv=1.0),
             #transforms.CenterSpatialCropD(keys=["image"], roi_size=(roi_image_size, roi_image_size)),
@@ -262,7 +352,7 @@ def get_upsampler_dataloader(batch_size: int,training_ids: str, validation_ids: 
             transforms.Resized(keys=["low_res_image"],spatial_size=(low_res_size, low_res_size)),
             transforms.ThresholdIntensityd(keys=["image","low_res_image"], threshold=1, above=False, cval=1.0),
             transforms.ThresholdIntensityd(keys=["image","low_res_image"], threshold=0, above=True, cval=0),
-            ApplyTokenizerd(keys=["report"]),
+            #ApplyTokenizerd(keys=["report"]),
             transforms.ToTensord(keys=["image",'low_res_image','report']) 
         ]
     )
@@ -271,7 +361,8 @@ def get_upsampler_dataloader(batch_size: int,training_ids: str, validation_ids: 
         [
             #transforms.LoadImaged(keys=["image", "low_res_image"], reader='PILReader'),
             #transforms.LoadImaged(keys=["image"], reader='PILReader'),
-            LoadDICOM(keys=['image']),
+            #LoadDICOM(keys=['image']),
+            LoadDICOMmask(keys=['image']),
             
             #transforms.EnsureChannelFirstd(keys=["image", "low_res_image"]),
             transforms.EnsureChannelFirstd(keys=["image"], channel_dim=0),
@@ -290,22 +381,27 @@ def get_upsampler_dataloader(batch_size: int,training_ids: str, validation_ids: 
             transforms.Resized(keys=["low_res_image"],spatial_size=(low_res_size, low_res_size)),
             transforms.ThresholdIntensityd(keys=["image","low_res_image"], threshold=1, above=False, cval=1.0),
             transforms.ThresholdIntensityd(keys=["image","low_res_image"], threshold=0, above=True, cval=0),
-            ApplyTokenizerd(keys=["report"]),
+            #ApplyTokenizerd(keys=["report"]),
             transforms.ToTensord(keys=["image",'low_res_image','report']) 
             
         ]
     )
+    #out_cache_dir = '/project/outputs/cache/'
+    #os.makedirs(out_cache_dir, exist_ok=True)
+    #cache_dir = os.path.join(out_cache_dir, "cached_data_aekl_multiclass_mask") 
+    #os.makedirs(cache_dir, exist_ok=True)
 
     #train_datalist = get_datalist(ids_path=training_ids)
     train_ds = CacheDataset(data=train_datalist, transform=train_transforms)
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,
                               num_workers=num_workers, persistent_workers=True)
+    
 
     #val_datalist = get_datalist(ids_path=validation_ids)
     val_ds = CacheDataset(data=val_datalist, transform=val_transforms)
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=True,
                             num_workers=num_workers)
-
+    
     return train_loader, val_loader
 
 def get_upsampler_dataloader_without_low_res(batch_size: int,training_ids: str, validation_ids: str, num_workers: int = 8):
@@ -320,38 +416,99 @@ def get_upsampler_dataloader_without_low_res(batch_size: int,training_ids: str, 
         num_workers (int): Envolve o quão rápido é feito o carregamento dos
         dados na memória (revisar)
     """
-    roi_image_size = 416
+    roi_image_size = 512 # 416
+    roi_low_res_size = 358 # 291
+    low_res_size =  512 # 208
+        
+    train_datalist = get_datalist(ids_path=training_ids)[:10]
+    val_datalist = get_datalist(ids_path=validation_ids)[:100]
 
+    #img_max_pixel, img_low_max_pixel = get_max_pixel_values(train_datalist) #16254 #15971
+    #dict = get_max_min_pixel_values(train_datalist)
+    #print(dict['max_pixel_img'])
+    #print(dict['min_pixel_img'])
     train_transforms = transforms.Compose(
         [
-            transforms.LoadImaged(keys=["image"]),
-            transforms.EnsureChannelFirstd(keys=["image"]),
-            transforms.ScaleIntensityd(keys=["image"], minv=0.0, maxv=1.0),
-            transforms.CenterSpatialCropD(keys=["image"], roi_size=(roi_image_size,roi_image_size)),
-            transforms.ToTensord(keys=["image"]) 
+            #transforms.LoadImaged(keys=["image", "low_res_image"], reader='PILReader'),
+            #transforms.LoadImaged(keys=["image"], reader='PILReader'),
+            #LoadDICOM(keys=['image']),
+            LoadDICOMmask(keys=['image']),
+
+            #transforms.EnsureChannelFirstd(keys=["image", "low_res_image"]),
+            transforms.EnsureChannelFirstd(keys=["image"], channel_dim=0), 
+            
+            #transforms.ScaleIntensityd(keys=["image", "low_res_image"], minv=0.0, maxv=1.0),
+            #transforms.CenterSpatialCropD(keys=["image"], roi_size=(roi_image_size, roi_image_size)),
+            #transforms.CenterSpatialCropD(keys=["low_res_image"], roi_size=(roi_low_res_size, roi_low_res_size)),
+            
+            Normalization(keys=["image"], min_val=0, max_val=1),
+            #Normalization(keys=["low_res_image"],min_val=dict['min_pixel_low_img'], max_val=dict['max_pixel_low_img']),
+            
+            #Normalization_max(keys=["image"], max_pixel_value=img_max_pixel),
+            #Normalization_max(keys=["low_res_image"], max_pixel_value=img_low_max_pixel),
+            # transforms.RandFlipd( #
+            #     keys=["image"],#, "low_res_image"
+            #     spatial_axis=0,
+            #     prob=0.2,
+            # ),
+            # transforms.RandFlipd( #
+            #     keys=["image"],#, "low_res_image"
+            #     spatial_axis=1,
+            #     prob=0.2,
+            # ),
+            # transforms.RandRotate90d(
+            #     keys=["image"],#, "low_res_image"
+            #     prob=0.2,
+            # ),
+            
+            transforms.CopyItemsd(keys=["image"], times=1, names=["low_res_image"]),
+            transforms.Resized(keys=["low_res_image"],spatial_size=(low_res_size, low_res_size)),
+            transforms.ThresholdIntensityd(keys=["image","low_res_image"], threshold=1, above=False, cval=1.0),
+            transforms.ThresholdIntensityd(keys=["image","low_res_image"], threshold=0, above=True, cval=0),
+            #ApplyTokenizerd(keys=["report"]),
+            transforms.ToTensord(keys=["image",'low_res_image']) 
         ]
     )
     
     val_transforms = transforms.Compose(
         [
-          transforms.LoadImaged(keys=["image"]),
-          transforms.EnsureChannelFirstd(keys=["image"]),
-          transforms.ScaleIntensityd(keys=["image"], minv=0.0, maxv=1.0),
-          transforms.CenterSpatialCropD(keys=["image"], roi_size=(roi_image_size,roi_image_size)),
-          transforms.ToTensord(keys=["image"]),
+            #transforms.LoadImaged(keys=["image", "low_res_image"], reader='PILReader'),
+            #transforms.LoadImaged(keys=["image"], reader='PILReader'),
+            #LoadDICOM(keys=['image']),
+            LoadDICOMmask(keys=['image']),
+            
+            #transforms.EnsureChannelFirstd(keys=["image", "low_res_image"]),
+            transforms.EnsureChannelFirstd(keys=["image"], channel_dim=0),
+            
+            #transforms.ScaleIntensityd(keys=["image", "low_res_image"], minv=0.0, maxv=1.0),
+            #transforms.CenterSpatialCropD(keys=["image"], roi_size=(roi_image_size, roi_image_size)),
+            #transforms.CenterSpatialCropD(keys=["low_res_image"], roi_size=(roi_low_res_size, roi_low_res_size)),
+            
+            Normalization(keys=["image"], min_val=0, max_val=1),
+            #Normalization(keys=["low_res_image"],min_val=dict['min_pixel_low_img'], max_val=dict['max_pixel_low_img']),
+            
+            #ormalization_max(keys=["image"], max_pixel_value=img_max_pixel),
+            #Normalization_max(keys=["low_res_image"], max_pixel_value=img_low_max_pixel),
+    
+            transforms.CopyItemsd(keys=["image"], times=1, names=["low_res_image"]),
+            transforms.Resized(keys=["low_res_image"],spatial_size=(low_res_size, low_res_size)),
+            transforms.ThresholdIntensityd(keys=["image","low_res_image"], threshold=1, above=False, cval=1.0),
+            transforms.ThresholdIntensityd(keys=["image","low_res_image"], threshold=0, above=True, cval=0),
+            #ApplyTokenizerd(keys=["report"]),
+            transforms.ToTensord(keys=["image",'low_res_image']) 
+            
         ]
     )
 
-    train_datalist = get_datalist(ids_path=training_ids)
     train_ds = CacheDataset(data=train_datalist, transform=train_transforms)
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,
                               num_workers=num_workers, persistent_workers=True)
+    
 
-    val_datalist = get_datalist(ids_path=validation_ids)
     val_ds = CacheDataset(data=val_datalist, transform=val_transforms)
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=True,
                             num_workers=num_workers)
-
+    
     return train_loader, val_loader
 
 

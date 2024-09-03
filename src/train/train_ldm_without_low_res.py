@@ -16,9 +16,27 @@ from torch.cuda.amp import autocast
 from generative.inferers import LatentDiffusionInferer
 
 from util_training import train_upsampler_ldm_without_low_res
-from util_transformations import get_upsampler_dataloader_without_low_res, get_upsampler_dataloader_mednist_2dldm
+from util_transformations import get_upsampler_dataloader_without_low_res, get_upsampler_dataloader
+import wandb
+import yaml
+from transformers import CLIPTextModel
+import torchvision.models as models
 
 warnings.filterwarnings("ignore")
+
+class ResNetEncoder(nn.Module):
+    def __init__(self, resnet):
+        super(ResNetEncoder, self).__init__()
+        self.resnet = resnet
+        self.pool = nn.AdaptiveAvgPool2d((8, 8))
+        self.flatten = nn.Flatten(start_dim=1)
+
+    def forward(self, x):
+        x = self.resnet(x)
+        x = self.pool(x)
+        x = self.flatten(x)
+        return x
+    
 
 if __name__ == '__main__':
     
@@ -43,22 +61,22 @@ if __name__ == '__main__':
     #set_determinism(seed=args.seed)
     print_config()
     
-    output_dir = "/project/outputs/runs/"
+    output_dir = "/project/outputs/runs_final/"
     os.makedirs(output_dir, exist_ok=True)
     
     print("Carregando os dados...")
-    # train_loader, val_loader = get_upsampler_dataloader_without_low_res(
-    #     batch_size=args.batch_size,
-    #     training_ids=args.training_ids,
-    #     validation_ids=args.validation_ids,
-    #     num_workers=args.num_workers,
-    # )
-    train_loader, val_loader = get_upsampler_dataloader_mednist_2dldm(
+    train_loader, val_loader = get_upsampler_dataloader(
         batch_size=args.batch_size,
         training_ids=args.training_ids,
         validation_ids=args.validation_ids,
         num_workers=args.num_workers,
     )
+    # train_loader, val_loader = get_upsampler_dataloader_mednist_2dldm(
+    #     batch_size=args.batch_size,
+    #     training_ids=args.training_ids,
+    #     validation_ids=args.validation_ids,
+    #     num_workers=args.num_workers,
+    # )
     
     # Load Autoencoder to produce the latent representations
     print(f"Carregando o autoencoder(Stage 1) em {args.stage1_path}")
@@ -74,6 +92,20 @@ if __name__ == '__main__':
     scheduler = DDPMScheduler(**config["ldm"].get("scheduler", dict()))
     low_res_scheduler = DDPMScheduler(**config["ldm"].get("scheduler", dict()))
     
+    resnet = models.resnet18(pretrained=True)
+    modules = list(resnet.children())[:-1]
+    resnet = nn.Sequential(*modules)
+    resnet_encoder = ResNetEncoder(resnet)
+
+    #text_encoder = CLIPTextModel.from_pretrained("stabilityai/stable-diffusion-2-1-base", subfolder="text_encoder")
+
+    with open(args.config_file, 'r') as file:
+        config_wandb = yaml.safe_load(file)
+    
+    #run = wandb.init(project="Artigo", name="LDM-Clinical-Zero-Padding", config=config_wandb)
+    #run = wandb.init(project="Artigo", name="LDM-Clinical-Lung-Without-Multiclass-Mask", config=config_wandb)
+    run = wandb.init(project="Artigo", name="LDM-Clinical-Lung-Multiclass-Mask-Z", config=config_wandb)
+
     print(f"{torch.cuda.device_count()} GPUs!")
     device = torch.device("cuda")
     # if torch.cuda.device_count() > 1:
@@ -82,7 +114,8 @@ if __name__ == '__main__':
 
     stage1 = stage1.to(device)
     diffusion = diffusion.to(device)
-    
+    #text_encoder = text_encoder.to(device)
+    resnet_encoder = resnet_encoder.to(device)
     check_data = first(train_loader)
 
     with torch.no_grad():
@@ -113,6 +146,8 @@ if __name__ == '__main__':
         eval_freq=args.val_interval,
         device=device,
         output_dir=output_dir,
-        inferer=inferer
-        #run=run
+        inferer=inferer,
+        run=run,
+        text_encoder=None,
+        resnet_encoder=resnet_encoder
     )

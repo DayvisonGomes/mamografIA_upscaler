@@ -8,7 +8,7 @@ ldm:
     num_channels: [256, 256, 512]
     attention_levels: [False, False, True]
     with_conditioning: True
-    cross_attention_dim: 512 # 512 pras masks, 1024 pra text
+    cross_attention_dim: 1024 # 512 pras masks, 1024 pra text
     num_head_channels: [0, 0, 512]
   scheduler:
     schedule: "scaled_linear_beta" # scaled_linear_beta
