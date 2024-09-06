@@ -85,11 +85,11 @@ if __name__ == '__main__':
 
 
     # for lung mask
-    # resnet = models.resnet18(pretrained=True)
-    # modules = list(resnet.children())[:-1]
-    # resnet = nn.Sequential(*modules)
-    # resnet_encoder = ResNetEncoder(resnet)
-    # resnet_encoder.to(device)
+    resnet = models.resnet18(pretrained=True)
+    modules = list(resnet.children())[:-1]
+    resnet = nn.Sequential(*modules)
+    resnet_encoder = ResNetEncoder(resnet)
+    resnet_encoder.to(device)
     
     #text_encoder = CLIPTextModel.from_pretrained("stabilityai/stable-diffusion-2-1-base", subfolder="text_encoder")
     #text_encoder.to(device)
@@ -196,28 +196,36 @@ if __name__ == '__main__':
     
     i = 0
     for batch in tqdm(eval_loader, ncols=110):
-        low_res_image = batch["low_res_image"].to(device)
+        #low_res_image = batch["low_res_image"].to(device)
         image = batch['image'].to(device)
-        reports = batch["report"].to(device)
+        #reports = batch["report"].to(device)
 
         # for lung mask
-        # mask_path = batch['filename'][0] + '_mask.tiff'
-        # mask_img = tifffile.imread(os.path.join('/project/data_lung_mask',mask_path))
-        # closed_lung_mask_tensor = torch.tensor(mask_img, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
-        # closed_lung_mask_tensor = closed_lung_mask_tensor.repeat(1, 3, 1, 1).to(image.device)
         mask_path = batch['filename'][0] + '_mask.tiff'
         mask_img = tifffile.imread(os.path.join('/project/data_lung_multiclass_masks', mask_path))
-        mask_tensor = torch.tensor(mask_img, dtype=torch.float32).unsqueeze(0).to(image.device)
-        #
+        mask_tensor = torch.tensor(mask_img, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
+        resnet_input = mask_tensor.repeat(1, 3, 1, 1).to(image.device) 
+        output_resnet = resnet_encoder(resnet_input)
+        output_resnet = output_resnet.view(-1, 512).unsqueeze(0).to(image.device)
+        output_resnet = output_resnet.view(output_resnet.size(0), 1, -1).to(image.device)
+
+        if np.unique(mask_img).shape[0] == 3:
+            classe = torch.tensor([1]).to(device)
+        
+        else:
+            classe = torch.tensor([0]).to(device)
+
         #prompt_embeds = text_encoder(reports.squeeze(1))
         #prompt_embeds = prompt_embeds[0]
         
         latents = torch.randn((image.shape[0], config["ldm"]["params"]["out_channels"], args.x_size, args.y_size)).to(
             device
         )
+       
+        low_res_image = F.interpolate(mask_tensor, size=(512, 512), mode='bilinear', align_corners=False).to(device) #exp4
         # low_res_noise = torch.randn((low_res_image.shape[0], 1, args.x_size, args.y_size)).to(device)
-                
-        noise_level = torch.Tensor((args.noise_level,)).long().to(device)
+       
+        # noise_level = torch.Tensor((args.noise_level,)).long().to(device)
         # noisy_low_res_image = scheduler.add_noise(
         #     original_samples=low_res_image,
         #     noise=low_res_noise,
@@ -230,30 +238,42 @@ if __name__ == '__main__':
         #output_resnet = resnet_encoder(closed_lung_mask_tensor)
         #output_resnet = output_resnet.view(-1, 512).unsqueeze(0)
 
+        intermediates = []
         scheduler.set_timesteps(num_inference_steps=args.num_inference_steps)
         for t in tqdm(scheduler.timesteps, ncols=110):
             with torch.no_grad():
                 with autocast(enabled=True):
-                    #latent_model_input = torch.cat([latents, noisy_low_res_image], dim=1)
-                    latent_model_input = latents
+                    latent_model_input = torch.cat([latents, low_res_image], dim=1)
+                    #latent_model_input = latents
                     
                     noise_pred = diffusion(
                         x=latent_model_input,
                         timesteps=torch.Tensor((t,)).to(device),
-                        class_labels=noise_level,
-                        context=mask_tensor
+                        class_labels=classe,
+                        context=output_resnet
                     )
                     
                 latents, _ = scheduler.step(noise_pred, t, latents)
 
-        with torch.no_grad():
-            sample = stage1.decode(latents / scale_factor)
-            #sample = stage1.decode_stage_2_outputs(latents[:,:, 1:-1, 1:-1] / args.scale_factor)
+                if t % 200 == 0:
+                    intermediates.append(latents)
 
-        psnr_value = psnr_metric(image, sample)
-        mae_value = mae_metric(image, sample)
-        mssim_value = mssim_metric(image, sample)
-        ssim_value = ssim_metric(image, sample)
+        intermediates.append(latents)
+        new_images = []
+        for space in intermediates:
+            with torch.no_grad():
+                sample = stage1.decode(space / scale_factor)
+                new_images.append(sample)
+                #sample = stage1.decode_stage_2_outputs(latents[:,:, 1:-1, 1:-1] / args.scale_factor)
+
+        # with torch.no_grad():
+        #     sample = stage1.decode(latents / scale_factor)
+        #     #sample = stage1.decode_stage_2_outputs(latents[:,:, 1:-1, 1:-1] / args.scale_factor)
+
+        psnr_value = psnr_metric(image, new_images[-1])
+        mae_value = mae_metric(image, new_images[-1])
+        mssim_value = mssim_metric(image, new_images[-1])
+        ssim_value = ssim_metric(image, new_images[-1])
         
         print('\n')
         print('MSSIM: ', mssim_value[0,0].item() )
@@ -271,12 +291,14 @@ if __name__ == '__main__':
             #img_name = batch['image_meta_dict']['filename_or_obj'][idx].split('/')[-1].split(".tiff")[0]
             img_name = batch['filename'][0]
             #path_img_up_tiff = os.path.join(output_dir, f"{img_name}_upscale.tiff")
+
             path_img_up_tiff = os.path.join(output_dir, f"{img_name}_generate.tiff")
-            
+            mask_path = img_name + '_mask.tiff'
             path_img_tiff = os.path.join(output_dir, f"{img_name}.tiff")
+
             #path_img_up_tiff = os.path.join(output_dir, f"{i}_upscale.tiff")
             #path_img_tiff = os.path.join(output_dir, f"{i}.tiff")
-            print(path_img_tiff)
+            
             img_upscale = sample[idx, 0].cpu().numpy()
             img = batch['image'][idx, 0].cpu().numpy()
             
@@ -296,6 +318,11 @@ if __name__ == '__main__':
             
             tifffile.imwrite(path_img_tiff, img)  
             tifffile.imwrite(path_img_up_tiff, img_upscale)
+            tifffile.imwrite(os.path.join(output_dir, mask_path), mask_img)
+
+            for m,new_img in enumerate(new_images):
+                tifffile.imwrite(os.path.join(output_dir, f'{img_name}_{m*200}.tiff'), new_img.cpu().numpy())
+
             i += 1
 
     output_logs = os.path.join(output_dir, 'logs')
