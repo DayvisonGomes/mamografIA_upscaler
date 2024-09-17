@@ -196,7 +196,7 @@ if __name__ == '__main__':
     
     i = 0
     for batch in tqdm(eval_loader, ncols=110):
-        #low_res_image = batch["low_res_image"].to(device)
+        low_res_image = batch["low_res_image"].to(device)
         image = batch['image'].to(device)
         #reports = batch["report"].to(device)
 
@@ -222,15 +222,15 @@ if __name__ == '__main__':
             device
         )
        
-        low_res_image = F.interpolate(mask_tensor, size=(512, 512), mode='bilinear', align_corners=False).to(device) #exp4
-        # low_res_noise = torch.randn((low_res_image.shape[0], 1, args.x_size, args.y_size)).to(device)
+        mask_low_res_image = F.interpolate(mask_tensor, size=(512, 512), mode='bilinear', align_corners=False).to(device) #exp4
+        low_res_noise = torch.randn((low_res_image.shape[0], 1, args.x_size, args.y_size)).to(device)
        
-        # noise_level = torch.Tensor((args.noise_level,)).long().to(device)
-        # noisy_low_res_image = scheduler.add_noise(
-        #     original_samples=low_res_image,
-        #     noise=low_res_noise,
-        #     timesteps=torch.Tensor((noise_level,)).long().to(device),
-        # )
+        noise_level = torch.Tensor((args.noise_level,)).long().to(device)
+        noisy_low_res_image = scheduler.add_noise(
+            original_samples=low_res_image,
+            noise=low_res_noise,
+            timesteps=torch.Tensor((noise_level,)).long().to(device),
+        )
 
         #noisy_low_res_image = torch.nn.functional.pad(noisy_low_res_image, (1, 1, 1, 1), mode='constant', value=0)
         #latents = torch.nn.functional.pad(latents, (1, 1, 1, 1), mode='constant', value=0)
@@ -243,14 +243,14 @@ if __name__ == '__main__':
         for t in tqdm(scheduler.timesteps, ncols=110):
             with torch.no_grad():
                 with autocast(enabled=True):
-                    latent_model_input = torch.cat([latents, low_res_image], dim=1)
+                    latent_model_input = torch.cat([latents, noisy_low_res_image, mask_low_res_image], dim=1)
                     #latent_model_input = latents
                     
                     noise_pred = diffusion(
                         x=latent_model_input,
                         timesteps=torch.Tensor((t,)).to(device),
-                        class_labels=classe,
-                        context=output_resnet
+                        class_labels=noise_level,
+                        #context=output_resnet
                     )
                     
                 latents, _ = scheduler.step(noise_pred, t, latents)

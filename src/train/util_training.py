@@ -390,7 +390,7 @@ def train_upsampler_ldm(
     model_save_path = os.path.join(output_dir, "ldm")
     os.makedirs(model_save_path, exist_ok=True)
     #early_stop = EarlyStopping(patience=17, verbose=True, path=os.path.join(model_save_path, "final_model_ldm_best_final.pth"))
-    early_stop = EarlyStopping(patience=21, verbose=True, path=os.path.join(model_save_path, "model_ldm_best_4_latent_pulmao_new_input_full_mask_exp5.pth"))
+    early_stop = EarlyStopping(patience=21, verbose=True, path=os.path.join(model_save_path, "model_ldm_best_4_latent_pulmao_new_input_sr_lossw_with_noise_exp7.pth"))
     #early_stop = EarlyStopping(patience=14, verbose=True, path=os.path.join(model_save_path, "model_ldm_best_0403.pth"))
 
     val_loss = eval_upsampler_ldm(
@@ -468,7 +468,7 @@ def train_upsampler_ldm(
     
     #torch.save(raw_model.state_dict(), os.path.join(model_save_path, "final_model_ldm_final.pth"))
     #torch.save(raw_model.state_dict(), os.path.join(model_save_path, "model_ldm_0403.pth"))
-    torch.save(raw_model.state_dict(), os.path.join(model_save_path, "model_ldm_4_latent_pulmao_new_input_full_mask_exp5.pth"))
+    torch.save(raw_model.state_dict(), os.path.join(model_save_path, "model_ldm_4_latent_pulmao_new_input_sr_lossw_with_noise_exp7.pth"))
 
     return val_loss
 
@@ -496,7 +496,7 @@ def train_epoch_upsampler_ldm(
     
     for step, x in pbar:
         images = x["image"].to(device)
-        #low_res_image = x["low_res_image"].to(device)
+        low_res_image = x["low_res_image"].to(device)
         quant_batch += images.shape[0]
         #reports = x["report"].to(device)
         
@@ -522,12 +522,13 @@ def train_epoch_upsampler_ldm(
         #closed_lung_mask_tensor = torch.tensor(mask_img, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
         #closed_lung_mask_tensor = closed_lung_mask_tensor.repeat(1, 3, 1, 1).to(images.device) 
         
-        low_res_image = F.interpolate(mask_tensor, size=(512, 512), mode='bilinear', align_corners=False).to(device)
+        #low_res_image = F.interpolate(mask_tensor, size=(512, 512), mode='bilinear', align_corners=False).to(device)
+        #mask_low_res_image = F.interpolate(mask_tensor, size=(512, 512), mode='bilinear', align_corners=False).to(device)
 
         timesteps = torch.randint(0, scheduler.num_train_timesteps, (images.shape[0],), device=images.device).long()
-        # low_res_timesteps = torch.randint(
-        #        0, 350, (low_res_image.shape[0],), device=low_res_image.device
-        # ).long()
+        low_res_timesteps = torch.randint(
+               0, 350, (low_res_image.shape[0],), device=low_res_image.device
+        ).long() # 350
         #output_resnet = resnet_encoder(closed_lung_mask_tensor)
         #output_resnet = output_resnet.view(-1, 512).unsqueeze(0)
 
@@ -541,32 +542,31 @@ def train_epoch_upsampler_ldm(
             #prompt_embeds = prompt_embeds[0]
             
             noise = torch.randn_like(latent).to(device)
-            #low_res_noise = torch.randn_like(low_res_image).to(device)
+            low_res_noise = torch.randn_like(low_res_image).to(device)
 
             noisy_latent = scheduler.add_noise(original_samples=latent, noise=noise, timesteps=timesteps)
             
-            # noisy_low_res_image = low_res_scheduler.add_noise(
-            #    original_samples=low_res_image, noise=low_res_noise, timesteps=low_res_timesteps
-            # )
+            noisy_low_res_image = low_res_scheduler.add_noise(
+               original_samples=low_res_image, noise=low_res_noise, timesteps=low_res_timesteps
+            )
 
-            latent_model_input = torch.cat([noisy_latent, low_res_image], dim=1)
-            #latent_model_input = torch.cat([noisy_latent, noisy_low_res_image], dim=1)
+            #latent_model_input = torch.cat([noisy_latent, low_res_image], dim=1)
+            latent_model_input = torch.cat([noisy_latent, noisy_low_res_image], dim=1)
             
             #latent_model_input = noisy_latent
 
             #latent_model_input = torch.nn.functional.pad(latent_model_input, (1, 1, 1, 1), mode='constant', value=0)
             #noise = torch.nn.functional.pad(noise, (1, 1, 1, 1), mode='constant', value=0)
             
-            #noise_pred = model(x=latent_model_input, timesteps=timesteps, class_labels=low_res_timesteps, context=full_mask)
+            noise_pred = model(x=latent_model_input, timesteps=timesteps, class_labels=low_res_timesteps)
             #noise_pred = model(x=latent_model_input, timesteps=timesteps, class_labels=classe, context=output_resnet)
-            noise_pred = model(x=latent_model_input, timesteps=timesteps, class_labels=classe, context=output_resnet)
             
             alpha_t = scheduler.alphas_cumprod[timesteps.cpu()]
             k = 1
             gama = 0.5
             snr = alpha_t / (1 - alpha_t)
-            loss = F.mse_loss(noise_pred.float(), noise.float()) / (k + snr) ** gama
-            #loss = F.mse_loss(noise_pred.float(), noise.float())
+            #loss = F.mse_loss(noise_pred.float(), noise.float()) / (k + snr) ** gama
+            loss = F.mse_loss(noise_pred.float(), noise.float())
 
         scaler.scale(loss).backward()
         scaler.step(optimizer)
@@ -604,7 +604,7 @@ def eval_upsampler_ldm(
 
     for x in loader:
         images = x["image"].to(device)
-        #low_res_image = x["low_res_image"].to(device)
+        low_res_image = x["low_res_image"].to(device)
         #reports = x["report"].to(device)
 
         #for lung mask
@@ -630,12 +630,13 @@ def eval_upsampler_ldm(
         #closed_lung_mask_tensor = torch.tensor(mask_img, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
         #closed_lung_mask_tensor = closed_lung_mask_tensor.repeat(1, 3, 1, 1).to(images.device) 
         
-        low_res_image = F.interpolate(mask_tensor, size=(512, 512), mode='bilinear', align_corners=False).to(device)
+        #low_res_image = F.interpolate(mask_tensor, size=(512, 512), mode='bilinear', align_corners=False).to(device)
+        #mask_low_res_image = F.interpolate(mask_tensor, size=(512, 512), mode='bilinear', align_corners=False).to(device)
 
         timesteps = torch.randint(0, scheduler.num_train_timesteps, (images.shape[0],), device=images.device).long()
-        # low_res_timesteps = torch.randint(
-        #        0, 350, (low_res_image.shape[0],), device=low_res_image.device
-        # ).long()
+        low_res_timesteps = torch.randint(
+               0, 350, (low_res_image.shape[0],), device=low_res_image.device
+        ).long() # 350
         #output_resnet = resnet_encoder(closed_lung_mask_tensor)
         #output_resnet = output_resnet.view(-1, 512).unsqueeze(0)
 
@@ -648,30 +649,30 @@ def eval_upsampler_ldm(
                 #prompt_embeds = prompt_embeds[0]
             
                 noise = torch.randn_like(latent).to(device)
-                #low_res_noise = torch.randn_like(low_res_image).to(device)
+                low_res_noise = torch.randn_like(low_res_image).to(device)
                 
                 noisy_latent = scheduler.add_noise(original_samples=latent, noise=noise, timesteps=timesteps)
-                # noisy_low_res_image = low_res_scheduler.add_noise(
-                #    original_samples=low_res_image, noise=low_res_noise, timesteps=low_res_timesteps
-                # )
+                noisy_low_res_image = low_res_scheduler.add_noise(
+                   original_samples=low_res_image, noise=low_res_noise, timesteps=low_res_timesteps
+                )
                 
-                latent_model_input = torch.cat([noisy_latent, low_res_image], dim=1)
-                #latent_model_input = torch.cat([noisy_latent, noisy_low_res_image], dim=1)
+                #latent_model_input = torch.cat([noisy_latent, low_res_image], dim=1)
+                latent_model_input = torch.cat([noisy_latent, noisy_low_res_image], dim=1)
                 
                 #latent_model_input = noisy_latent
                 #latent_model_input = torch.nn.functional.pad(latent_model_input, (1, 1, 1, 1), mode='constant', value=0)
                 #noise = torch.nn.functional.pad(noise, (1, 1, 1, 1), mode='constant', value=0)
                 
-                #noise_pred = model(x=latent_model_input, timesteps=timesteps, class_labels=low_res_timesteps,context=output_resnet)
+                noise_pred = model(x=latent_model_input, timesteps=timesteps, class_labels=low_res_timesteps)
                 #noise_pred = model(x=latent_model_input, timesteps=timesteps, class_labels=classe, context=output_resnet)
-                noise_pred = model(x=latent_model_input, timesteps=timesteps, class_labels=classe, context=output_resnet)
+                #noise_pred = model(x=latent_model_input, timesteps=timesteps, class_labels=classe, context=output_resnet)
                 
                 alpha_t = scheduler.alphas_cumprod[timesteps.cpu()]
                 k = 1
                 gama = 0.5
                 snr = alpha_t / (1 - alpha_t)
-                loss = F.mse_loss(noise_pred.float(), noise.float()) / (k + snr) ** gama
-                #loss = F.mse_loss(noise_pred.float(), noise.float())
+                #loss = F.mse_loss(noise_pred.float(), noise.float()) / (k + snr) ** gama
+                loss = F.mse_loss(noise_pred.float(), noise.float())
 
             losses = OrderedDict(loss=loss)
 
@@ -679,27 +680,27 @@ def eval_upsampler_ldm(
                 total_losses[k] = total_losses.get(k, 0) + v.item() * images.shape[0]
     
     # Sampling image during training
-    #sampling_image = low_res_image[0].unsqueeze(0)
+    sampling_image = low_res_image[0].unsqueeze(0)
     latents = torch.randn((1, 4, 512, 512)).to(device)
-    # low_res_noise = torch.randn((1, 1, 512, 512)).to(device)
-    # noise_level = 1
-    # noise_level = torch.Tensor((noise_level,)).long().to(device)
-    # noisy_low_res_image = scheduler.add_noise(
-    #    original_samples=sampling_image,
-    #    noise=low_res_noise,
-    #    timesteps=torch.Tensor((noise_level,)).long().to(device),
-    # )
+    low_res_noise = torch.randn((1, 1, 512, 512)).to(device)
+    noise_level = 1
+    noise_level = torch.Tensor((noise_level,)).long().to(device)
+    noisy_low_res_image = scheduler.add_noise(
+       original_samples=sampling_image,
+       noise=low_res_noise,
+       timesteps=torch.Tensor((noise_level,)).long().to(device),
+    )
 
     scheduler.set_timesteps(num_inference_steps=1000)
     for t in tqdm(scheduler.timesteps, ncols=110):
         with torch.no_grad():
             with autocast(enabled=True):
-                latent_model_input = torch.cat([latents, low_res_image], dim=1)
+                latent_model_input = torch.cat([latents, noisy_low_res_image], dim=1)
                 #latent_model_input = latents
 
                 noise_pred = model(
-                    x=latent_model_input, timesteps=torch.Tensor((t,)).to(device), class_labels=classe,
-                    context=output_resnet
+                    x=latent_model_input, timesteps=torch.Tensor((t,)).to(device), class_labels=noise_level,
+                    #context=output_resnet
                 )
                 # noise_pred = model(
                 #     x=latent_model_input, timesteps=torch.Tensor((t,)).to(device),

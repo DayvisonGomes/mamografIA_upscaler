@@ -7,10 +7,10 @@ ldm:
     num_res_blocks: 2
     num_channels: [256, 256, 512]
     attention_levels: [False, False, True]
-    with_conditioning: True
-    cross_attention_dim: 32768 # 512 pras masks, 1024 pra text
+    #with_conditioning: True
+    #cross_attention_dim: 32768 # 512 pras masks, 1024 pra text
     num_head_channels: [0, 0, 512] # 0,0,512
-    num_class_embeds: 1000 # 2
+    num_class_embeds: 350 # 2
   scheduler:
     schedule: "linear_beta" # scaled_linear_beta
     num_train_timesteps: 1000

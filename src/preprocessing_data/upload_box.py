@@ -6,7 +6,7 @@ origem = r'D:\Users\dayv\baixar'
 
 destino = r"D:\Users\bbruno\Box\Box Sync\Folder_UFPB\Dayvison"
 
-shutil.copy(os.path.join(origem, 'imagens_exps.zip'), os.path.join(destino, 'imagens_exps.zip'))
+shutil.copy(os.path.join(origem, 'imagens_sr.zip'), os.path.join(destino, 'imagens_sr.zip'))
 
 # arquivos = os.listdir(origem)[:4]
 
