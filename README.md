@@ -1,6 +1,6 @@
 # mamografIA_upscaler
 
-Repositório contendo todos os códigos para a realização da super-resolução em mamografias, utilizando o autoencoder kl e o modelo de difusão da Unet.
+Repositório contendo todos os códigos para a realização da super-resolução em mamografias, utilizando o autoencoder kl e o modelo DiffusionModelUnet.
 
 Esquema de pastas e arquivos:
 
